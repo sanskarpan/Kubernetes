@@ -1,0 +1,93 @@
+# ==============================================================================
+# kube-platform .gitignore
+# ==============================================================================
+
+# ---- Helm artifacts ----------------------------------------------------------
+*.tgz
+Chart.lock
+charts/
+
+# ---- Kubernetes / kubeconfig -------------------------------------------------
+*.kubeconfig
+kubeconfig
+kubeconfig.*
+.kube/
+
+# ---- Secrets & credentials ---------------------------------------------------
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+.env
+.env.*
+secrets.yaml
+secrets.yml
+*-secret.yaml
+*-secret.yml
+# Allow sealed secrets (they are safe to commit)
+!sealed-secrets/*-sealed.yaml
+
+# ---- Override values (contain environment-specific, potentially sensitive data)
+values-override.yaml
+values-override.yml
+values.local.yaml
+values.prod.yaml
+
+# ---- OS artifacts ------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ---- Editor / IDE ------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.iml
+
+# ---- Python (yamllint, pre-commit) -------------------------------------------
+__pycache__/
+*.py[cod]
+.Python
+venv/
+.venv/
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# ---- Node (for any tooling) --------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ---- Terraform (if used alongside) ------------------------------------------
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+terraform.tfvars
+
+# ---- Logs & temp files -------------------------------------------------------
+*.log
+*.tmp
+*.bak
+*.orig
+/tmp/
+
+# ---- Local test artifacts ----------------------------------------------------
+/test-output/
+/coverage/
