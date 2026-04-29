@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-bluegreen
+  namespace: blue-green-demo
+  labels:
+    app.kubernetes.io/name: nginx-bluegreen
+    app.kubernetes.io/instance: nginx-bluegreen
+    app.kubernetes.io/version: "1.24"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Traffic control point for Blue-Green deployment — change selector.version from v1 to v2 to switch all traffic to green"
+spec:
+  type: ClusterIP
+
+  # THE TRAFFIC SWITCH — THE HEART OF BLUE-GREEN:
+  # This selector currently routes 100% of traffic to blue pods (version: v1).
+  #
+  # To switch to green (v2), run:
+  #   kubectl patch service nginx-bluegreen -n blue-green-demo \
+  #     -p '{"spec":{"selector":{"version":"v2"}}}'
+  #
+  # To roll back to blue (v1), run:
+  #   kubectl patch service nginx-bluegreen -n blue-green-demo \
+  #     -p '{"spec":{"selector":{"version":"v1"}}}'
+  #
+  # The switch takes effect within milliseconds — kube-proxy updates iptables/ipvs
+  # rules on all nodes as soon as the Endpoints object is updated by the endpointslice
+  # controller. In-flight connections to the old version complete normally (no RST).
+  # New connections immediately go to the new version.
+  #
+  # WHY NOT CHANGE THE DEPLOYMENT'S LABELS?
+  # We change the service selector, not the pod labels. This is because:
+  # 1. Changing pod labels on a Deployment requires a rollout (pod restart), which
+  #    takes time and defeats the purpose of instant switching.
+  # 2. Changing the service selector is a non-destructive, instantly reversible
+  #    control-plane operation that requires no pod restarts.
+  selector:
+    app.kubernetes.io/name: nginx-bluegreen
+    version: v1   # CHANGE TO v2 TO SWITCH TRAFFIC TO GREEN
+
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
