@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: database
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql
+    app.kubernetes.io/version: "8.0"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "ClusterIP service for MySQL — application connection endpoint with load balancing across ready pods"
+spec:
+  # This is a standard ClusterIP service — Kubernetes assigns it a stable virtual IP
+  # and kube-proxy distributes connections across all Ready MySQL pods.
+  #
+  # Applications should connect to this service, NOT the headless service, because:
+  # 1. This service load-balances across all ready replicas (read traffic).
+  # 2. The ClusterIP is stable even if all pods restart.
+  # 3. It provides a single, simple connection string: mysql.database.svc.cluster.local:3306
+  #
+  # NOTE ON MYSQL WRITES vs READS:
+  # In a MySQL primary/replica topology, only mysql-0 (the primary) accepts writes.
+  # This service load-balances across ALL pods, so it is only appropriate for:
+  #   a) Read-only traffic (if your application separates reads and writes)
+  #   b) Write traffic IF you are using a MySQL proxy (ProxySQL, Vitess) in front
+  #
+  # For write-only connections to the primary, connect directly to:
+  #   mysql-0.mysql-headless.database.svc.cluster.local:3306
+  #
+  # For production MySQL, consider deploying ProxySQL as a sidecar or separate
+  # Deployment to handle read/write splitting automatically.
+  type: ClusterIP
+
+  selector:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql
+
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: 3306
+    protocol: TCP
+
+  # sessionAffinity: ClientIP makes kube-proxy route all requests from the same client IP
+  # to the same backend pod. Useful for connection pooling — ensures a client's persistent
+  # TCP connection pool always goes to the same MySQL pod, reducing cross-pod latency.
+  # Default is 'None' (round-robin). Use 'ClientIP' if your app uses persistent connections.
+  sessionAffinity: None
