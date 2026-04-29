@@ -24,7 +24,7 @@ spec:
     app.kubernetes.io/instance: nginx-recreate
 
   ports:
-  - name: http
-    port: 80          # External port that clients connect to
-    targetPort: 8080  # Must match the container's containerPort
-    protocol: TCP
+    - name: http
+      port: 80          # External port that clients connect to
+      targetPort: 8080  # Must match the container's containerPort
+      protocol: TCP

@@ -72,92 +72,92 @@ spec:
           type: RuntimeDefault
 
       containers:
-      - name: nginx
-        image: nginx:1.24
-        imagePullPolicy: IfNotPresent
+        - name: nginx
+          image: nginx:1.24
+          imagePullPolicy: IfNotPresent
 
-        ports:
-        - name: http
-          containerPort: 8080
-          protocol: TCP
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
 
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
 
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
 
-        lifecycle:
-          preStop:
-            exec:
-              # WHY THIS MATTERS FOR ROLLING UPDATES:
-              # When Kubernetes decides to terminate a pod (during rollout), it:
-              # 1. Removes the pod from Service endpoints (stops new connections)
-              # 2. Runs the preStop hook
-              # 3. Sends SIGTERM to the container
-              # 4. Waits terminationGracePeriodSeconds for the process to exit
-              #
-              # The 'sleep 5' here creates a brief overlap where the pod is removed
-              # from endpoints BEFORE NGINX receives SIGTERM. This prevents the rare
-              # race condition where:
-              #   - kube-proxy removes the pod from iptables rules (async, takes 1-2s)
-              #   - New requests still arrive at the pod during that 1-2s window
-              #   - NGINX has already shut down and returns connection reset
-              # The sleep gives kube-proxy time to fully propagate the endpoint removal
-              # before NGINX starts refusing connections.
-              command: ["/bin/sh", "-c", "sleep 5"]
+          lifecycle:
+            preStop:
+              exec:
+                # WHY THIS MATTERS FOR ROLLING UPDATES:
+                # When Kubernetes decides to terminate a pod (during rollout), it:
+                # 1. Removes the pod from Service endpoints (stops new connections)
+                # 2. Runs the preStop hook
+                # 3. Sends SIGTERM to the container
+                # 4. Waits terminationGracePeriodSeconds for the process to exit
+                #
+                # The 'sleep 5' here creates a brief overlap where the pod is removed
+                # from endpoints BEFORE NGINX receives SIGTERM. This prevents the rare
+                # race condition where:
+                #   - kube-proxy removes the pod from iptables rules (async, takes 1-2s)
+                #   - New requests still arrive at the pod during that 1-2s window
+                #   - NGINX has already shut down and returns connection reset
+                # The sleep gives kube-proxy time to fully propagate the endpoint removal
+                # before NGINX starts refusing connections.
+                command: ["/bin/sh", "-c", "sleep 5"]
 
-        # THE MOST IMPORTANT PROBE FOR ZERO-DOWNTIME ROLLING UPDATES.
-        # This probe gates when a pod joins the Service endpoint list.
-        # Kubernetes will NOT terminate an old pod until this probe succeeds on the new pod.
-        # Make sure this probe accurately reflects when your app is ready to serve traffic:
-        #   - DB connections established
-        #   - Config loaded
-        #   - Caches warmed
-        #   - Health dependencies satisfied
-        # A probe that returns 200 too early (before the app is truly ready) breaks
-        # the zero-downtime guarantee.
-        readinessProbe:
-          httpGet:
-            path: /         # In production: use /readyz or /healthz/ready endpoint
-            port: 8080
-          initialDelaySeconds: 5    # Wait for NGINX to start before first check
-          periodSeconds: 5          # Check every 5 seconds
-          timeoutSeconds: 3         # Probe times out after 3 seconds (network latency buffer)
-          failureThreshold: 3       # 3 consecutive failures = remove from endpoints (not a restart)
-          successThreshold: 1       # 1 success = add to endpoints
+          # THE MOST IMPORTANT PROBE FOR ZERO-DOWNTIME ROLLING UPDATES.
+          # This probe gates when a pod joins the Service endpoint list.
+          # Kubernetes will NOT terminate an old pod until this probe succeeds on the new pod.
+          # Make sure this probe accurately reflects when your app is ready to serve traffic:
+          #   - DB connections established
+          #   - Config loaded
+          #   - Caches warmed
+          #   - Health dependencies satisfied
+          # A probe that returns 200 too early (before the app is truly ready) breaks
+          # the zero-downtime guarantee.
+          readinessProbe:
+            httpGet:
+              path: /         # In production: use /readyz or /healthz/ready endpoint
+              port: 8080
+            initialDelaySeconds: 5    # Wait for NGINX to start before first check
+            periodSeconds: 5          # Check every 5 seconds
+            timeoutSeconds: 3         # Probe times out after 3 seconds (network latency buffer)
+            failureThreshold: 3       # 3 consecutive failures = remove from endpoints (not a restart)
+            successThreshold: 1       # 1 success = add to endpoints
 
-        # livenessProbe triggers a restart if the container is alive but not functioning.
-        # This is SEPARATE from readiness — a pod can be live but not ready (under load,
-        # waiting for dependencies) and should stay running but not receive traffic.
-        livenessProbe:
-          httpGet:
-            path: /         # In production: use /livez or /healthz/live endpoint
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 3
-          failureThreshold: 3   # 3 consecutive failures = restart the container
+          # livenessProbe triggers a restart if the container is alive but not functioning.
+          # This is SEPARATE from readiness — a pod can be live but not ready (under load,
+          # waiting for dependencies) and should stay running but not receive traffic.
+          livenessProbe:
+            httpGet:
+              path: /         # In production: use /livez or /healthz/live endpoint
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3   # 3 consecutive failures = restart the container
 
-        volumeMounts:
-        - name: nginx-cache
-          mountPath: /var/cache/nginx
-        - name: nginx-run
-          mountPath: /var/run
-        - name: tmp
-          mountPath: /tmp
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
 
       volumes:
-      - name: nginx-cache
-        emptyDir: {}
-      - name: nginx-run
-        emptyDir: {}
-      - name: tmp
-        emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
