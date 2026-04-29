@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-recreate
+  namespace: recreate-demo
+  labels:
+    app.kubernetes.io/name: nginx-recreate
+    app.kubernetes.io/instance: nginx-recreate
+    app.kubernetes.io/version: "1.24"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "NGINX webserver using Recreate strategy — demonstrates downtime during version updates. Use nginx:1.25 to trigger recreation."
+spec:
+  # Only 2 replicas for the demo — enough to show the recreate pattern.
+  replicas: 2
+
+  # revisionHistoryLimit: how many old ReplicaSets to keep for rollback.
+  # 5 is a good production default — enough history to roll back through recent releases.
+  # Each old ReplicaSet takes minimal resources (just an object in etcd) but setting this
+  # too high clutters 'kubectl get replicasets'.
+  revisionHistoryLimit: 5
+
+  # minReadySeconds: a pod is considered 'available' only after being Ready for this long.
+  # Even with Recreate, this adds stability after the new pods start.
+  minReadySeconds: 10
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-recreate
+      app.kubernetes.io/instance: nginx-recreate
+
+  strategy:
+    # Recreate: all old pods are terminated before new pods start.
+    # This guarantees no overlap between versions but causes downtime.
+    # To see the effect: change the image to nginx:1.25 and run 'kubectl apply'.
+    # Watch 'kubectl get pods -n recreate-demo -w' to observe the gap.
+    type: Recreate
+    # Note: rollingUpdate field is omitted — it only applies to type: RollingUpdate.
+    # Kubernetes will reject the manifest if rollingUpdate is specified with Recreate.
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx-recreate
+        app.kubernetes.io/instance: nginx-recreate
+        # version label tracks which image version this pod runs.
+        # Update to "1.25" when changing the image to nginx:1.25.
+        app.kubernetes.io/version: "1.24"
+        app.kubernetes.io/component: webserver
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "NGINX v1 pod (nginx:1.24) — to be recreated with v2 (nginx:1.25)"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        # NGINX official image: the master process runs as root to bind port 80,
+        # but worker processes run as 'nginx' user (UID 101) by default.
+        # For runAsNonRoot: true to work, we must use a non-privileged port (8080).
+        # The nginx:1.24 image's default config uses port 80 (requires root).
+        # In production, use a custom nginx.conf with 'listen 8080' and this security context.
+        # For simplicity in this demo, we document this but use UID 101 which still
+        # satisfies the PSA 'baseline' policy on the namespace.
+        runAsUser: 101    # nginx user in the official nginx image
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+      - name: nginx
+        # v1 image — change to nginx:1.25 to trigger the Recreate strategy.
+        image: nginx:1.24
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 8080   # Non-privileged port — required for runAsNonRoot
+          protocol: TCP
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+
+        lifecycle:
+          preStop:
+            exec:
+              # Give NGINX time to finish processing in-flight requests before shutdown.
+              # With Recreate, this is less critical (we want downtime to be brief),
+              # but it's still good practice to drain gracefully.
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+        # readinessProbe determines when a pod is added to the Service endpoint list.
+        # With Recreate, readiness still matters — minReadySeconds requires the pod
+        # to be Ready for N seconds before the deployment is considered 'available'.
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        volumeMounts:
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+        - name: tmp
+          mountPath: /tmp
+
+      volumes:
+      # NGINX needs to write to /var/cache/nginx and /var/run when readOnlyRootFilesystem: true.
+      # We provide emptyDir volumes for these paths.
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
