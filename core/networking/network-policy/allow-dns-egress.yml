@@ -1,0 +1,88 @@
+# ==============================================================================
+# NetworkPolicy: Allow DNS Egress to kube-dns
+# ==============================================================================
+# WHY THIS POLICY IS NECESSARY:
+#   When you apply a deny-all-egress NetworkPolicy (see deny-all-egress.yml),
+#   ALL outbound traffic from pods is blocked — including DNS queries.
+#   Without DNS, pods cannot resolve any hostname:
+#     - Service names like "mysql.database.svc.cluster.local" fail.
+#     - External hostnames like "api.stripe.com" fail.
+#     - Even ExternalName Services fail (they depend on CoreDNS CNAME resolution).
+#   Pods get "Temporary failure in name resolution" errors immediately.
+#
+# THIS POLICY ALLOWS:
+#   UDP port 53 (standard DNS) and TCP port 53 (DNS over TCP for large responses,
+#   AXFR, and DNSSEC) to pods in the kube-system namespace labelled
+#   "k8s-app: kube-dns" — which is the CoreDNS deployment.
+#
+# HOW TO COMBINE WITH deny-all-egress.yml:
+#   Apply BOTH policies to the same namespace. NetworkPolicy rules are additive
+#   (union, not intersection) — a packet is allowed if ANY policy permits it.
+#
+#   kubectl apply -f deny-all-egress.yml       # Block everything first
+#   kubectl apply -f allow-dns-egress.yml      # Then allow DNS
+#   kubectl apply -f allow-to-database.yml     # Then allow specific app traffic
+#
+# VERIFYING kube-dns LABELS:
+#   kubectl get pods -n kube-system -l k8s-app=kube-dns
+#   # Should list CoreDNS pods. If empty, check with:
+#   kubectl get pods -n kube-system --show-labels | grep dns
+#
+# NAMESPACE: Update "database" to match the namespace this should protect.
+#
+# Apply:
+#   kubectl apply -f allow-dns-egress.yml
+#   kubectl describe networkpolicy allow-dns-egress -n database
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: database
+
+  labels:
+    app.kubernetes.io/name: allow-dns-egress
+    app.kubernetes.io/instance: allow-dns-egress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Allows all pods in the database namespace to send DNS queries (UDP and TCP
+      port 53) to CoreDNS pods in kube-system. Apply this alongside
+      deny-all-egress.yml to restore DNS resolution after blanket egress denial.
+      Without this policy, pods cannot resolve any hostname after a deny-all
+      egress policy is applied.
+
+spec:
+  # podSelector: {} — Apply to ALL pods in this namespace.
+  # Every workload needs DNS resolution; there is rarely a reason to exempt
+  # individual pods from this rule.
+  podSelector: {}
+
+  policyTypes:
+    - Egress
+
+  egress:
+    # ── Allow DNS (UDP + TCP port 53) to CoreDNS ──────────────────────────────
+    - ports:
+        # UDP 53: standard DNS query/response (the common case).
+        - protocol: UDP
+          port: 53
+        # TCP 53: used when the DNS response exceeds 512 bytes (DNSSEC, large
+        # SRV records) and for zone transfers. Include both protocols.
+        - protocol: TCP
+          port: 53
+
+      to:
+        # Target only the CoreDNS pods in kube-system.
+        # The namespaceSelector + podSelector combination matches pods that
+        # satisfy BOTH selectors simultaneously (logical AND).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
