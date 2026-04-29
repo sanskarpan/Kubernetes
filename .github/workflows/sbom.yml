@@ -1,0 +1,49 @@
+---
+name: SBOM – Django Notes App
+
+on:
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: django-notes-app
+
+jobs:
+  sbom:
+    name: Generate and Attest SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate SBOM
+        id: sbom
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+          upload-artifact: true
+          upload-artifact-retention: 30
+
+      # Optional: attest the SBOM to the GitHub container registry.
+      # Requires GITHUB_TOKEN with id-token: write and attestations: write permissions.
+      # The attestation is stored in the GHCR alongside the image.
+      - name: Attest SBOM
+        uses: actions/attest-sbom@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ github.sha }}
+          sbom-path: sbom.cyclonedx.json
+          push-to-registry: true
