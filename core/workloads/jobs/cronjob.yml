@@ -1,0 +1,211 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: data-backup
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: data-backup
+    app.kubernetes.io/instance: data-backup
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Daily data backup CronJob — runs at 2AM UTC, backs up application data to mounted volume"
+spec:
+  # Standard cron syntax: minute hour day-of-month month day-of-week
+  # "0 2 * * *" = minute 0 of hour 2, every day, every month, every weekday
+  # = 2:00 AM UTC every day.
+  # All times are UTC unless timeZone is specified (Kubernetes 1.27+).
+  schedule: "0 2 * * *"
+
+  # timeZone: Specify the timezone for the schedule (Kubernetes 1.27+, stable 1.29+).
+  # Without this, the schedule runs in the kube-controller-manager's timezone (usually UTC).
+  # Uncomment if your team needs backups at a specific local time:
+  # timeZone: "America/New_York"
+
+  # Forbid: If the previous backup Job is still running when 2AM arrives again,
+  # SKIP the new run. This is the correct policy for backups because:
+  #   1. Running two backups simultaneously doubles resource usage.
+  #   2. Two backup processes writing to the same target path would corrupt the backup.
+  #   3. The current backup should complete before a new one starts.
+  # Alert if the previous backup is still running at the next scheduled time —
+  # it means your backup is taking longer than expected (growing dataset, slow storage).
+  concurrencyPolicy: Forbid
+
+  # Keep the last 3 successful Job objects (and their pod logs).
+  # Provides a rolling history for auditing: "was last night's backup successful?"
+  successfulJobsHistoryLimit: 3
+
+  # Keep the last 1 failed Job object for debugging.
+  # You want at least 1 so you can inspect logs after a failure.
+  # More than 1 is usually unnecessary — fix the failure, don't accumulate failures.
+  failedJobsHistoryLimit: 1
+
+  # If the CronJob controller was down and missed the 2AM schedule, it will only
+  # attempt to run the missed job if it's within 300 seconds (5 minutes) of the
+  # scheduled time. Missed windows older than 5 minutes are skipped.
+  # Without this, a controller restart could trigger many missed backup runs at once.
+  startingDeadlineSeconds: 300
+
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-backup
+        app.kubernetes.io/component: backup
+        app.kubernetes.io/part-of: kube-platform
+      annotations:
+        kubernetes.io/description: "Job template for data-backup CronJob"
+    spec:
+      # Backup jobs should complete in one attempt — retries risk writing
+      # duplicate or partial backups. Set backoffLimit: 0 for strict one-shot,
+      # or 1-2 to tolerate transient failures (network blips, storage timeouts).
+      backoffLimit: 1
+
+      # Backup must complete within 1 hour. If it takes longer:
+      #   a) Your dataset has grown beyond what can be backed up nightly.
+      #   b) Something is wrong (slow storage, network issues, hung process).
+      # Either way, the Job should be killed and alerted rather than running indefinitely.
+      activeDeadlineSeconds: 3600
+
+      # Auto-delete after 7 days — enough for auditing without cluttering the cluster.
+      ttlSecondsAfterFinished: 604800
+
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: data-backup
+            app.kubernetes.io/component: backup
+            app.kubernetes.io/part-of: kube-platform
+          annotations:
+            kubernetes.io/description: "Data backup pod"
+        spec:
+          automountServiceAccountToken: false
+          terminationGracePeriodSeconds: 60
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            fsGroup: 999
+            seccompProfile:
+              type: RuntimeDefault
+
+          restartPolicy: Never
+
+          containers:
+          - name: backup
+            # In production, replace with your backup tool's image:
+            # e.g., amazon/aws-cli for S3 backups, google/cloud-sdk for GCS,
+            # or a purpose-built image with mysqldump/pg_dump + cloud storage CLI.
+            image: busybox:1.36
+            imagePullPolicy: IfNotPresent
+
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              set -u
+
+              BACKUP_DATE=$(date -u +%Y-%m-%d)
+              BACKUP_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+              BACKUP_FILE="/backup/data-${BACKUP_DATE}.tar.gz"
+
+              echo "=== Data Backup Started ==="
+              echo "Date: ${BACKUP_TIME}"
+              echo "Target: ${BACKUP_FILE}"
+              echo "Pod: ${POD_NAME}"
+
+              # Step 1: Pre-backup checks
+              echo "Checking available disk space..."
+              df -h /backup
+              # In production: check if enough space exists before starting.
+
+              # Step 2: Create backup
+              echo "Creating backup archive..."
+              # Production example (database dump):
+              # mysqldump -h "${DB_HOST}" -u root -p"${DB_PASSWORD}" --all-databases \
+              #   | gzip > "${BACKUP_FILE}"
+              #
+              # Production example (filesystem backup):
+              # tar -czf "${BACKUP_FILE}" /data/
+              #
+              # Production example (S3 upload):
+              # aws s3 cp "${BACKUP_FILE}" "s3://${BACKUP_BUCKET}/$(date +%Y/%m/%d)/"
+              echo "[SIMULATED] Backup archive created at ${BACKUP_FILE}"
+
+              # Step 3: Verify backup integrity
+              echo "Verifying backup..."
+              # Production: check archive integrity and non-zero size
+              # tar -tzf "${BACKUP_FILE}" > /dev/null && echo "Archive is valid"
+              echo "[SIMULATED] Backup integrity verified."
+
+              # Step 4: Rotate old backups (keep last 7 days)
+              echo "Rotating old backups..."
+              # find /backup -name "data-*.tar.gz" -mtime +7 -delete
+              echo "[SIMULATED] Old backups rotated."
+
+              echo "=== Data Backup Completed Successfully ==="
+              echo "File: ${BACKUP_FILE}"
+              echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "500m"   # Allow burst CPU for compression
+
+            env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # In production, add credentials from secrets:
+            # - name: DB_HOST
+            #   valueFrom:
+            #     configMapKeyRef:
+            #       name: db-config
+            #       key: host
+            # - name: DB_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: db-secret
+            #       key: password
+            # - name: BACKUP_BUCKET
+            #   valueFrom:
+            #     configMapKeyRef:
+            #       name: backup-config
+            #       key: bucket_name
+
+            volumeMounts:
+            - name: backup-storage
+              mountPath: /backup   # Where backup files are written
+            - name: tmp
+              mountPath: /tmp      # Temp space for compression staging
+
+          volumes:
+          # hostPath backup target — simulates a NAS or local backup volume.
+          # In production, replace this with:
+          #   a) A PVC pointing to NFS or object-storage-backed storage class
+          #   b) No volume at all (upload directly to S3/GCS from the container)
+          #   c) A PVC with ReadWriteMany for shared access
+          - name: backup-storage
+            hostPath:
+              path: /var/backups/kubernetes
+              # DirectoryOrCreate: create the directory if it doesn't exist.
+              # In production with a PVC, this volume definition is replaced entirely.
+              type: DirectoryOrCreate
+          - name: tmp
+            emptyDir: {}
