@@ -1,0 +1,48 @@
+# ==============================================================================
+# kustomize/base/nginx-service.yaml
+# Base Service manifest — environment-agnostic.
+#
+# ClusterIP Service provides a stable internal IP address and DNS name for nginx.
+# Overlays do not patch the Service structure; they only inherit namespace from
+# the kustomization.yaml namespace field.
+#
+# Service DNS (within the cluster):
+#   nginx.{namespace}.svc.cluster.local
+#   (e.g., nginx.prod.svc.cluster.local for the prod overlay)
+#
+# The selector must match the Pod template labels from nginx-deployment.yaml.
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  # No namespace — added by each overlay's kustomization.yaml
+
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: "ClusterIP service for the nginx deployment — routes traffic to all Ready nginx pods"
+
+spec:
+  # ClusterIP: accessible only within the cluster.
+  # Change to LoadBalancer to expose externally (triggers cloud LB provisioning).
+  # Change to NodePort to expose on each node's IP at a static port.
+  type: ClusterIP
+
+  # The selector determines which Pods this Service routes traffic to.
+  # Must match the labels on the Pod template in nginx-deployment.yaml.
+  selector:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+
+  ports:
+  - name: http
+    port: 80          # Port the Service is reachable on (ClusterIP:80)
+    targetPort: 80    # Port on the Pod the traffic is forwarded to
+    protocol: TCP
