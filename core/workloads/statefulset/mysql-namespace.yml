@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: database
+  labels:
+    app.kubernetes.io/part-of: kube-platform
+    # Pod Security Standards (PSS) — enforces security policies at the namespace level.
+    # 'restricted' is the strictest level: requires non-root, no privilege escalation,
+    # seccomp profile, and drops all capabilities. Any pod violating these rules is REJECTED.
+    pod-security.kubernetes.io/enforce: restricted
+    # 'latest' means Kubernetes always uses the current version of the policy.
+    # Pin to a specific version (e.g., v1.29) in production to avoid unexpected breakage
+    # when upgrading Kubernetes and the policy becomes stricter.
+    pod-security.kubernetes.io/enforce-version: latest
+    # 'warn' and 'audit' labels are additive — they don't block pods but emit warnings/audit events.
+    # Useful for gradually tightening policy without immediately breaking workloads.
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+  annotations:
+    kubernetes.io/description: "Namespace for database workloads — hosts MySQL StatefulSets and related resources"
