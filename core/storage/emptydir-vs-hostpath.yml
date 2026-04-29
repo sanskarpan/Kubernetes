@@ -1,0 +1,331 @@
+# ==============================================================================
+# emptyDir vs hostPath — Ephemeral and Node-Local Volume Comparison
+# ==============================================================================
+# This file contains TWO example pods (separated by ---) demonstrating the two
+# most common non-persistent volume types.
+#
+# EMPTYDIR:
+#   - Created fresh when the pod is scheduled onto a node.
+#   - Deleted permanently when the pod is removed from the node (any reason).
+#   - NOT tied to any specific node — the pod can be rescheduled anywhere.
+#   - Can be backed by memory (medium: Memory) for faster, ephemeral scratch space.
+#   - Perfect for: shared temp space between containers, caches, downloaded artifacts,
+#     intermediate processing results, scratch space for readOnlyRootFilesystem.
+#   - Sidecar sharing: init containers and sidecar containers share emptyDir
+#     with the main container — the classic pattern for config population.
+#
+# HOSTPATH:
+#   - Mounts a specific path from the NODE's filesystem into the pod.
+#   - Data SURVIVES pod restarts (if the pod is rescheduled to the SAME node).
+#   - Ties the pod to a specific node (bad for HA; if the node dies, the pod fails).
+#   - SECURITY RISK: provides access to node-level files — a compromised pod
+#     can read sensitive node files (e.g., /etc/passwd, container runtime socket).
+#   - Use ONLY for: DaemonSets that legitimately need node-level access (log
+#     collectors reading /var/log/, system monitoring reading /proc/, CSI drivers).
+#   - Not suitable for: regular Deployments or StatefulSets (use PVC instead).
+#
+# ALTERNATIVES TO CONSIDER OVER HOSTPATH:
+#   - CSI ephemeral volumes: inline CSI volumes mounted directly in the pod spec,
+#     similar to emptyDir but provided by a CSI driver (e.g., secrets-store-csi).
+#   - Generic ephemeral volumes: inline PVC-like volumes in the pod spec (K8s 1.23+),
+#     backed by any dynamic provisioner but deleted with the pod.
+#   - PersistentVolumeClaims: for data that must survive pod deletion.
+#
+# VOLUME TYPE DECISION GUIDE:
+#   Need temp space within a pod?            → emptyDir
+#   Share files between sidecar containers?  → emptyDir
+#   Need fast in-memory scratch (tmpfs)?     → emptyDir with medium: Memory
+#   DaemonSet accessing node logs?           → hostPath (justified exception)
+#   Data must survive pod deletion?          → PVC
+#   Data across multiple pods on multiple nodes? → RWX PVC (NFS/EFS/CephFS)
+#
+# Apply:
+#   kubectl apply -f emptydir-vs-hostpath.yml
+# ==============================================================================
+
+# ── Example 1: emptyDir for sidecar shared temp space ─────────────────────────
+# Pattern: a main container writes processed data to a shared emptyDir;
+# a log-shipper sidecar container reads those files and forwards them.
+# Both containers start and die together with the pod.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emptydir-demo
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: emptydir-demo
+    app.kubernetes.io/instance: emptydir-demo
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: demo
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Demonstrates emptyDir volume shared between a main app container and a
+      log-shipper sidecar. The main container writes logs to /shared/logs/;
+      the sidecar tails and forwards them. Both see the same data via emptyDir.
+      All data is lost when the pod is deleted — intended for ephemeral workloads.
+
+spec:
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 30
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
+
+  volumes:
+    # ── Shared log directory ──────────────────────────────────────────────────
+    # Both containers mount this volume. Main app writes; log-shipper reads.
+    # LIFECYCLE: created when pod is scheduled, deleted when pod is removed.
+    # Not tied to any node — pod can be rescheduled anywhere freely.
+    - name: shared-logs
+      emptyDir: {}  # Backed by the node's disk. Default medium.
+
+    # ── In-memory scratch space (tmpfs) ───────────────────────────────────────
+    # medium: Memory backs the emptyDir with RAM (a tmpfs mount).
+    # Benefits:
+    #   - Much faster than disk (no I/O latency).
+    #   - Data is never written to disk (useful for sensitive temp files).
+    # Caveats:
+    #   - Counts against the node's memory pressure.
+    #   - sizeLimit is STRONGLY recommended — without it, a runaway process can
+    #     consume all node memory, affecting other pods on the same node.
+    - name: in-memory-cache
+      emptyDir:
+        medium: Memory
+        sizeLimit: "256Mi"  # Caps memory usage — evicted if exceeded.
+
+    # Standard tmp for processes needing a writable /tmp
+    - name: tmp
+      emptyDir: {}
+
+  containers:
+    # ── Main application container ─────────────────────────────────────────────
+    - name: app
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "App starting, writing logs to /shared/logs/..."
+          while true; do
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO Processing request..." >> /shared/logs/app.log
+            sleep 5
+          done
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /shared/logs
+        - name: in-memory-cache
+          mountPath: /cache  # Fast in-memory scratch for temp results
+        - name: tmp
+          mountPath: /tmp
+
+    # ── Log-shipper sidecar container ─────────────────────────────────────────
+    # Shares the same "shared-logs" emptyDir. Both containers see the same files.
+    # In production: replace this with Fluentd, Filebeat, or Vector.
+    - name: log-shipper
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Log shipper starting, tailing /shared/logs/app.log..."
+          # Wait for the log file to appear (app might not have written it yet)
+          until [ -f /shared/logs/app.log ]; do
+            echo "Waiting for app.log to appear..."
+            sleep 1
+          done
+          # Tail the log and "ship" it (simulated with echo to stdout)
+          tail -f /shared/logs/app.log | while read -r line; do
+            echo "[LOG-SHIPPER] Forwarding: ${line}"
+          done
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "25m"
+        limits:
+          memory: "64Mi"
+
+      volumeMounts:
+        # Sidecar mounts the same shared-logs volume as the main container.
+        # Both containers share the same directory — writes from one are
+        # immediately visible to the other (no network, no delay, same node).
+        - name: shared-logs
+          mountPath: /shared/logs
+          readOnly: true  # Log shipper only reads — does not write logs.
+        - name: tmp
+          mountPath: /tmp
+
+---
+# ==============================================================================
+# Example 2: hostPath — Accessing Node Logs from a DaemonSet
+# ==============================================================================
+# hostPath mounts a directory from the node's filesystem into the pod.
+# This is the CORRECT use case for hostPath: a DaemonSet (log collector)
+# that needs access to container logs stored on the node at /var/log/pods/.
+#
+# WHY DAEMONSETS ARE THE ONLY JUSTIFIED USE CASE:
+#   A DaemonSet runs exactly one pod per node. The pod is ALWAYS on the node
+#   whose filesystem it is mounting. If the node is lost, the DaemonSet pod
+#   is rescheduled on a NEW node — and it correctly mounts the NEW node's logs.
+#   For a regular Deployment pod, hostPath would pin it to one node and read
+#   that node's files — useless if rescheduled elsewhere.
+#
+# SECURITY CONSIDERATIONS:
+#   - hostPath type: Directory — only allows mounting if the path exists and
+#     is a directory. Safer than no type (which allows any path type).
+#   - type: DirectoryOrCreate — creates the directory if it doesn't exist.
+#   - The pod has read access to node files visible under /var/log/ — a compromised
+#     pod could read other pods' logs. Use NetworkPolicy + PodSecurity to limit blast radius.
+#   - NEVER mount: /proc, /sys, /etc, /, /run (highly privileged node paths).
+#   - NEVER use hostPath in a multi-tenant cluster without strong PodSecurity enforcement.
+# ==============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: hostpath-log-collector
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: hostpath-log-collector
+    app.kubernetes.io/instance: hostpath-log-collector
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      DaemonSet log collector demonstrating justified hostPath usage. Mounts
+      /var/log/pods from each node to collect container logs. hostPath is
+      acceptable only for DaemonSets with a genuine node-level access requirement.
+      Do NOT use hostPath in regular Deployments or StatefulSets.
+
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hostpath-log-collector
+      app.kubernetes.io/instance: hostpath-log-collector
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hostpath-log-collector
+        app.kubernetes.io/instance: hostpath-log-collector
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: logging
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "Log collector pod reading node-level container logs via hostPath"
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      volumes:
+        # ── hostPath: mounts /var/log/pods from the NODE's filesystem ──────────
+        # This directory contains all container logs for pods scheduled on this node.
+        # Kubernetes writes container stdout/stderr here as JSON log lines.
+        # The log collector reads these files and ships them to a central log store.
+        - name: node-logs
+          hostPath:
+            path: /var/log/pods   # Path on the NODE's filesystem (not the pod's).
+
+            # type: Directory — fail if /var/log/pods does not exist or is not a directory.
+            # This prevents accidentally mounting a file or non-existent path.
+            # Other type values:
+            #   DirectoryOrCreate  — create the directory if it doesn't exist
+            #   File               — mount a specific file (not a directory)
+            #   FileOrCreate       — create the file if it doesn't exist
+            #   Socket             — mount a Unix socket
+            #   CharDevice         — mount a character device
+            #   BlockDevice        — mount a block device
+            type: Directory
+
+        - name: tmp
+          emptyDir: {}
+
+      containers:
+        - name: log-collector
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Log collector starting on $(hostname)..."
+              echo "Node logs directory contents:"
+              ls /var/log/pods/ 2>/dev/null || echo "(empty)"
+              echo "Tailing all pod logs (first 5 entries per pod dir)..."
+              # In production: replace with Fluentd/Filebeat/Vector pointing to /var/log/pods/
+              find /var/log/pods -name "*.log" | head -20 | while read -r logfile; do
+                echo "=== ${logfile} ==="
+                tail -n 2 "${logfile}" 2>/dev/null || true
+              done
+              echo "Log collector initialized. Running..."
+              sleep 3600
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+
+          volumeMounts:
+            # Mount the node's /var/log/pods at the same path inside the container.
+            # readOnly: true — the log collector should only read, never write to node logs.
+            - name: node-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
