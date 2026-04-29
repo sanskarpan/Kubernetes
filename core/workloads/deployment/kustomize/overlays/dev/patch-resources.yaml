@@ -1,0 +1,39 @@
+# ==============================================================================
+# overlays/dev/patch-resources.yaml
+# Strategic merge patch for dev environment resource limits.
+#
+# This patch adds memory and CPU limits to the nginx container in the base
+# Deployment. The base manifest intentionally omits limits so each environment
+# can size them appropriately.
+#
+# How strategic merge patches work:
+#   1. Kustomize identifies the target resource by apiVersion/kind/metadata.name
+#   2. It deep-merges this patch onto the base manifest
+#   3. For lists (like containers[]), Kubernetes uses a "merge key" (container name)
+#      to identify which list item to merge into
+#
+# Dev limits are intentionally small because:
+#   - Dev clusters are shared and resource-constrained
+#   - Dev workloads have predictable, low traffic
+#   - Cost optimization: dev should not consume staging/prod-level resources
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # Must match the Deployment name in the base to be correctly targeted.
+  name: nginx
+spec:
+  template:
+    spec:
+      containers:
+      - name: nginx   # Strategic merge key — identifies which container to patch
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            # Dev memory limit: small but sufficient for serving test traffic.
+            # If the container exceeds this, it is OOM-killed — acceptable in dev.
+            memory: "128Mi"
+            # Note: no cpu limit even in dev — we still avoid throttling to keep
+            # the local development experience responsive.
