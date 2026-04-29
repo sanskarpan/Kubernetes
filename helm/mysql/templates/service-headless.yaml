@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mysql.fullname" . }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: >-
+      Headless Service for MySQL StatefulSet. Provides stable DNS entries for each pod:
+      <pod-name>.{{ include "mysql.fullname" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local
+    # Headless services with selectors create DNS A records for individual pod IPs.
+    # Required by StatefulSet for stable network identity (pod hostname resolution).
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  # clusterIP: None — makes this a headless service (no cluster IP assigned).
+  # DNS queries return individual pod IPs instead of a single virtual IP.
+  clusterIP: None
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: mysql
+      protocol: TCP
+      name: mysql
+  selector:
+    {{- include "mysql.selectorLabels" . | nindent 4 }}
+  # publishNotReadyAddresses: true — include pods that are not yet Ready in DNS.
+  # This is important during StatefulSet initialization and rolling updates.
+  publishNotReadyAddresses: true
