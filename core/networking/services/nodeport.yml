@@ -1,0 +1,100 @@
+# ==============================================================================
+# NodePort Service — External Access for Development / Testing
+# ==============================================================================
+# NodePort extends ClusterIP by additionally opening a static port on EVERY
+# node's external network interface. Traffic arriving at <any-node-IP>:<nodePort>
+# is forwarded to the Service's ClusterIP, then to a backing pod.
+#
+# WHEN TO USE:
+#   - Local development clusters (minikube, kind, k3s) where no cloud LB exists.
+#   - Quick smoke-testing of a new service from outside the cluster.
+#   - CI environments where you need external access without provisioning infra.
+#
+# WARNING — DO NOT USE IN PRODUCTION FOR EXTERNAL HTTP/HTTPS TRAFFIC:
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ NodePort exposes the service on ALL nodes simultaneously, including     │
+# │ control-plane nodes (in single-node dev setups). Any host that can     │
+# │ reach ANY node on port 30080 can reach this service. You cannot        │
+# │ restrict it to specific nodes at the Service level.                    │
+# │                                                                         │
+# │ For production external access, use:                                   │
+# │   - Ingress + Ingress Controller (for HTTP/HTTPS — cost-efficient)     │
+# │   - LoadBalancer Service (for raw TCP/UDP — one LB per service)        │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# Access from outside the cluster:
+#   curl http://<any-node-external-ip>:30080
+#
+# With minikube:
+#   minikube service nginx-nodeport -n networking-demo --url
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-nodeport
+  namespace: networking-demo
+
+  labels:
+    app.kubernetes.io/name: nginx-nodeport
+    app.kubernetes.io/instance: nginx-nodeport
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      NodePort Service exposing nginx pods on node port 30080. Intended for
+      development and testing only. Do NOT use for production external traffic;
+      use Ingress + Ingress Controller or a LoadBalancer Service instead.
+
+spec:
+  type: NodePort
+
+  # selector must match the pods you want to expose.
+  selector:
+    app.kubernetes.io/name: nginx
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80             # Port on the ClusterIP (for in-cluster consumers).
+                           # In-cluster pods can still use the ClusterIP:80.
+      targetPort: 80       # Port on the backing pod containers.
+      nodePort: 30080      # The port opened on every node's external interface.
+                           # Must be in the range 30000-32767 (configurable in
+                           # kube-apiserver --service-node-port-range, default
+                           # is 30000-32767).
+                           #
+                           # Omitting nodePort causes Kubernetes to assign one
+                           # randomly from the available range — fine for dev,
+                           # but hard to use in static firewall rules.
+                           #
+                           # Do NOT use ports below 30000 here; those ranges
+                           # typically require root and conflict with OS services.
+
+  # sessionAffinity: None means each connection is independently routed.
+  # For a dev/test NodePort, None is appropriate.
+  sessionAffinity: None
+
+  # externalTrafficPolicy controls how the node that receives the packet
+  # handles it:
+  #
+  # Cluster (default): The receiving node may forward the packet to a pod on a
+  #   DIFFERENT node. This provides better load distribution but performs SNAT,
+  #   which means the pod sees the node's IP as the source, not the client's
+  #   real IP. Useful when pods need even load distribution.
+  #
+  # Local: The receiving node only forwards to pods running ON THAT NODE. If no
+  #   pod runs on the receiving node, the connection is dropped (so you need a
+  #   proper LB in front). Benefit: no SNAT, so pods see the real client IP.
+  #   The DaemonSet + Local pattern is used by Ingress Controllers and MetalLB
+  #   speaker pods.
+  #
+  # For a simple dev NodePort, Cluster is fine.
+  externalTrafficPolicy: Cluster
+
+  # healthCheckNodePort is only relevant when externalTrafficPolicy: Local.
+  # Kubernetes allocates a health-check port on each node that cloud LBs can
+  # probe to determine whether any backing pods exist on that node.
+  # healthCheckNodePort: 32500   # auto-assigned when externalTrafficPolicy: Local
