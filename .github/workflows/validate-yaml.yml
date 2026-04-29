@@ -51,6 +51,7 @@ jobs:
             ! -path './.git/*' \
             ! -path './.github/*' \
             ! -path './helm/*/templates/*' \
+            ! -name 'helmfile.yaml' \
           | sort \
           | xargs -r yamllint \
               --strict \
