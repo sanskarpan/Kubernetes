@@ -1,0 +1,129 @@
+# ==============================================================================
+# HPA — CPU AND MEMORY METRICS (autoscaling/v2)
+# ==============================================================================
+# Scales nginx-deployment in the workloads namespace based on both CPU and
+# memory utilization. Kubernetes picks whichever metric indicates MORE scaling
+# is needed (the HPA takes the maximum recommendation across all metrics).
+#
+# Prerequisites:
+#   - Metrics Server installed in the cluster
+#   - nginx-deployment exists in the workloads namespace
+#   - Pods in the deployment must have resources.requests.cpu and
+#     resources.requests.memory set — HPA utilization % is relative to requests
+#
+# Apply:
+#   kubectl apply -f hpa-cpu-memory.yml
+#
+# Verify:
+#   kubectl get hpa -n workloads nginx-hpa
+#   kubectl describe hpa -n workloads nginx-hpa
+# ==============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx-hpa
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: nginx-hpa
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      HPA for nginx-deployment. Scales on both CPU (target 70%) and memory
+      (target 80%). Scale-down is throttled to 50% of pods per minute after a
+      5-minute stabilization window. Scale-up is immediate with a burst of up
+      to 4 pods per minute.
+spec:
+  # ---------------------------------------------------------------------------
+  # Scale target — the Deployment this HPA controls
+  # ---------------------------------------------------------------------------
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx-deployment
+
+  # ---------------------------------------------------------------------------
+  # Replica bounds
+  # minReplicas: Keep at least 2 pods for basic HA even at zero load.
+  # maxReplicas: Hard ceiling — prevents runaway scaling from metric anomalies.
+  # ---------------------------------------------------------------------------
+  minReplicas: 2
+  maxReplicas: 10
+
+  # ---------------------------------------------------------------------------
+  # Metrics — HPA uses ALL metrics and scales to satisfy whichever requires
+  # the highest replica count. It does NOT average across metrics.
+  # ---------------------------------------------------------------------------
+  metrics:
+    # CPU utilization relative to each pod's resources.requests.cpu
+    # AverageUtilization: 70 means scale out when average pod CPU > 70% of request
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: AverageUtilization
+          averageUtilization: 70
+
+    # Memory utilization relative to each pod's resources.requests.memory
+    # Memory-based scaling is useful for workloads that cache data in memory
+    # and degrade before CPU becomes a bottleneck.
+    # AverageUtilization: 80 — memory is less elastic, so threshold is higher.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: AverageUtilization
+          averageUtilization: 80
+
+  # ---------------------------------------------------------------------------
+  # Behavior — controls the speed of scale-up and scale-down decisions.
+  # Without this block, scale-down defaults to 300s stabilization (safe),
+  # but scale-down RATE is unlimited — a sudden drop could remove all extra
+  # pods at once, causing a latency spike if load returns quickly.
+  # ---------------------------------------------------------------------------
+  behavior:
+    scaleDown:
+      # stabilizationWindowSeconds: The HPA looks back 300 seconds (5 minutes)
+      # and uses the HIGHEST replica recommendation in that window before
+      # deciding to scale down. This prevents thrashing when load fluctuates
+      # near the threshold. 300s is the Kubernetes default and a good production value.
+      stabilizationWindowSeconds: 300
+
+      # selectPolicy: Min means use the policy that allows the SMALLEST reduction
+      # per period — the most conservative option. Combined with the stabilization
+      # window, this makes scale-down slow and deliberate.
+      selectPolicy: Min
+
+      policies:
+        # Limit scale-down to 50% of current pods per minute.
+        # Example: if running 8 pods, at most 4 can be removed per minute.
+        # This prevents sudden cliff-drops in capacity.
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+
+    scaleUp:
+      # stabilizationWindowSeconds: 0 means react immediately to scale-up signals.
+      # Do not add a delay here — slow scale-up means latency for users during spikes.
+      stabilizationWindowSeconds: 0
+
+      # selectPolicy: Max means use the policy that allows the LARGEST increase
+      # per period — the most aggressive option. We want fast scale-up.
+      selectPolicy: Max
+
+      policies:
+        # Add at most 4 pods per minute regardless of current replica count.
+        # Good for workloads that start quickly.
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+
+        # Alternatively, allow doubling the pod count per minute for very low
+        # starting counts (e.g., 2 → 4 → 8). The Max selectPolicy above means
+        # whichever policy allows MORE pods wins.
+        - type: Percent
+          value: 100
+          periodSeconds: 60
