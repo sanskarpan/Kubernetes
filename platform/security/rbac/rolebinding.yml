@@ -1,0 +1,65 @@
+# ==============================================================================
+# ROLEBINDING — app-rolebinding
+# ==============================================================================
+# Binds the "app-role" Role to the "app-service-account" ServiceAccount,
+# granting the ServiceAccount the permissions defined in app-role, but ONLY
+# within the "workloads" namespace.
+#
+# Key properties of RoleBinding:
+#   - Scope: Permissions are limited to the binding's namespace (workloads).
+#   - Can bind a Role OR a ClusterRole — when binding a ClusterRole, permissions
+#     are still limited to the binding's namespace.
+#   - Does NOT grant permissions on cluster-scoped resources (nodes, PVs, etc.)
+#     Use ClusterRoleBinding for those (see cluster-rolebinding.yml).
+#
+# Apply:
+#   kubectl apply -f rolebinding.yml
+#
+# Verify the binding is working:
+#   kubectl auth can-i get pods -n workloads \
+#     --as=system:serviceaccount:workloads:app-service-account
+#   # Expected: yes
+#
+#   kubectl auth can-i get secrets/app-secret -n workloads \
+#     --as=system:serviceaccount:workloads:app-service-account
+#   # Expected: yes
+#
+#   kubectl auth can-i get secrets/other-secret -n workloads \
+#     --as=system:serviceaccount:workloads:app-service-account
+#   # Expected: no  (resourceNames restriction in the Role)
+#
+#   kubectl auth can-i list nodes \
+#     --as=system:serviceaccount:workloads:app-service-account
+#   # Expected: no  (nodes are cluster-scoped, not in this Role)
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-rolebinding
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: app-rolebinding
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: app-platform
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      RoleBinding granting app-service-account the permissions defined in app-role
+      within the workloads namespace. Grants read-only access to pods, a ConfigMap,
+      and the specific secret named app-secret.
+subjects:
+  # The ServiceAccount that receives the permissions.
+  # kind: ServiceAccount — requires namespace field (ServiceAccounts are namespaced)
+  # The namespace in subjects must match where the ServiceAccount exists,
+  # which may differ from the RoleBinding's namespace if needed.
+  - kind: ServiceAccount
+    name: app-service-account
+    namespace: workloads    # Namespace where this ServiceAccount lives
+
+roleRef:
+  # roleRef is immutable after creation. To change it, delete and recreate the binding.
+  kind: Role              # "Role" for namespaced roles; "ClusterRole" for cluster-wide roles
+  name: app-role          # Must exist in the same namespace as this RoleBinding
+  apiGroup: rbac.authorization.k8s.io
