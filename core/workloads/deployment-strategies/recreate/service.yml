@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-recreate
+  namespace: recreate-demo
+  labels:
+    app.kubernetes.io/name: nginx-recreate
+    app.kubernetes.io/instance: nginx-recreate
+    app.kubernetes.io/version: "1.24"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "ClusterIP service for nginx-recreate — during Recreate rollout, this service will return connection refused while pods are terminated"
+spec:
+  # ClusterIP is the default service type — a stable virtual IP within the cluster.
+  # During the Recreate rollout, the endpoint slice for this service will temporarily
+  # have zero endpoints (between old pod termination and new pod readiness).
+  # This is the observable "downtime window" of the Recreate strategy.
+  type: ClusterIP
+
+  selector:
+    app.kubernetes.io/name: nginx-recreate
+    app.kubernetes.io/instance: nginx-recreate
+
+  ports:
+  - name: http
+    port: 80          # External port that clients connect to
+    targetPort: 8080  # Must match the container's containerPort
+    protocol: TCP
