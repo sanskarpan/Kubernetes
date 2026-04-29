@@ -1,0 +1,34 @@
+# GitLeaks configuration
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+
+title = "GitLeaks config for Kubernetes reference repo"
+
+[extend]
+# Extend the default gitleaks ruleset
+useDefault = true
+
+[[allowlists]]
+description = "Placeholder base64 content in example Sealed Secrets"
+regexTarget = "line"
+regexes = [
+  # Sealed Secrets store encrypted ciphertext, not real secrets.
+  # These are example/placeholder values only.
+  'encryptedData:',
+  'AgB[A-Za-z0-9+/]{20,}={0,2}',
+]
+paths = [
+  '''platform/security/.*sealed.*\.ya?ml''',
+  '''examples/.*sealed.*\.ya?ml''',
+]
+
+[[allowlists]]
+description = "Known safe test credentials in example files"
+regexTarget = "line"
+regexes = [
+  # Example DB passwords used only in local/dev manifests
+  'password:\s*(changeme|example|placeholder|CHANGEME|test1234)',
+  'secret:\s*(changeme|example|placeholder|CHANGEME|test1234)',
+]
+paths = [
+  '''examples/.*''',
+]
