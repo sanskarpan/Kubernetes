@@ -1,0 +1,52 @@
+---
+# Namespace — Logical isolation boundary within a cluster
+# ========================================================
+# Namespaces provide:
+#   - Name uniqueness (resources share names only within a namespace)
+#   - Resource quota isolation (LimitRange, ResourceQuota)
+#   - RBAC scope (Roles apply within a namespace)
+#   - NetworkPolicy scope
+#
+# Pod Security Admission (PSA) — enforced by the pod-security.kubernetes.io labels:
+#   Labels: pod-security.kubernetes.io/{enforce,audit,warn}: {privileged,baseline,restricted}
+#
+#   Levels:
+#     privileged  — no restrictions (only for system namespaces like kube-system)
+#     baseline    — prevents known privilege escalations (minimum for production)
+#     restricted  — hardened policy: non-root, no host namespaces, seccomp, etc.
+#
+#   Modes:
+#     enforce — reject Pods that violate the policy (hard block)
+#     audit   — allow but log violations (use during migration)
+#     warn    — allow but warn the client (kubectl shows a warning)
+#
+# This namespace enforces the Restricted PSS policy — the highest security level.
+# All Pods in this namespace MUST satisfy all Restricted requirements.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production-baseline
+  labels:
+    app.kubernetes.io/name: production-baseline
+    app.kubernetes.io/instance: production-baseline
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: platform
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+    # Pod Security Admission — enforce Restricted policy
+    # Any Pod that doesn't meet Restricted requirements will be REJECTED.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+
+    # Also audit and warn during migration to catch violations in child namespaces
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+
+  annotations:
+    kubernetes.io/description: >-
+      Production baseline namespace demonstrating full Restricted PSS enforcement.
+      All workloads must satisfy runAsNonRoot, readOnlyRootFilesystem, seccomp, and
+      capabilities drop ALL requirements.
