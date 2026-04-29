@@ -1,0 +1,216 @@
+# ==============================================================================
+# HPA WITH CUSTOM METRICS — Prometheus Adapter integration
+# ==============================================================================
+# Custom metric HPAs extend native CPU/memory scaling to application-level
+# metrics exported from Prometheus. This requires:
+#
+# PREREQUISITES:
+#   1. Metrics Server installed (for CPU/memory HPAs)
+#   2. Prometheus Operator + Prometheus installed (for metric collection)
+#   3. Prometheus Adapter installed:
+#        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#        helm install prometheus-adapter prometheus-community/prometheus-adapter \
+#          --namespace monitoring \
+#          --set prometheus.url=http://prometheus-operated.monitoring.svc \
+#          --set prometheus.port=9090
+#
+# HOW THE HPA FETCHES CUSTOM METRICS:
+#   The HPA controller uses the custom.metrics.k8s.io API to query metrics.
+#   The Prometheus Adapter registers itself as an APIService for this API group
+#   and translates HPA metric queries into PromQL queries against Prometheus.
+#
+# PROMETHEUS ADAPTER CONFIGMAP (the metricsQuery pattern):
+#   The adapter's ConfigMap defines how to map API metric names to PromQL:
+#
+#   data:
+#     config.yaml: |
+#       rules:
+#         - seriesQuery: 'http_requests_total{namespace!="",pod!=""}'
+#           resources:
+#             overrides:
+#               namespace: {resource: "namespace"}
+#               pod: {resource: "pod"}
+#           name:
+#             matches: "^(.*)_total$"
+#             as: "${1}_per_second"
+#           metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+#
+#   The <<.Series>>, <<.LabelMatchers>>, and <<.GroupBy>> are template variables
+#   expanded by the adapter at query time.
+#
+# Verify the adapter is serving custom metrics:
+#   kubectl get --raw '/apis/custom.metrics.k8s.io/v1beta1' | jq .
+#   kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1' | jq .
+#
+# Apply:
+#   kubectl apply -f hpa-custom-metrics.yml
+#
+# Check HPA status and current metric values:
+#   kubectl describe hpa myapp-custom-hpa -n workloads
+# ==============================================================================
+
+# ==============================================================================
+# EXAMPLE 1: HPA using External metric type (requests_per_second)
+# ==============================================================================
+# External metrics are cluster-wide metrics not tied to a specific Kubernetes object.
+# Use External type for: queue depth, global RPS from a load balancer, SQS queue size.
+#
+# target.type: AverageValue — HPA divides the metric value by current replicas and
+# compares to averageValue. If current RPS is 500 and there are 3 replicas,
+# average is 166/replica. With averageValue: "100", desired replicas = ceil(500/100) = 5.
+# ==============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: myapp-external-metrics-hpa
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: myapp-external-metrics-hpa
+    app.kubernetes.io/instance: myapp-external-metrics-hpa
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: myapp
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      HPA scaling myapp-deployment on external requests_per_second metric via
+      Prometheus Adapter. Scales to maintain <= 100 RPS per replica.
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp-deployment
+
+  minReplicas: 2
+  maxReplicas: 20
+
+  metrics:
+    # -----------------------------------------------------------------------
+    # External metric: requests_per_second
+    # -----------------------------------------------------------------------
+    # The Prometheus Adapter exposes this metric at:
+    #   /apis/external.metrics.k8s.io/v1beta1/namespaces/workloads/requests_per_second
+    #
+    # The adapter maps it to PromQL:
+    #   sum(rate(http_requests_total{namespace="workloads"}[2m]))
+    #
+    # HPA algorithm for AverageValue:
+    #   desiredReplicas = ceil(currentMetricValue / averageValue)
+    #   If total RPS = 450, averageValue = 100:
+    #     desiredReplicas = ceil(450 / 100) = 5
+    # -----------------------------------------------------------------------
+    - type: External
+      external:
+        metric:
+          name: requests_per_second
+          # selector: filter the metric to this specific app/namespace
+          selector:
+            matchLabels:
+              app: myapp
+        target:
+          type: AverageValue
+          # Scale out when each replica is handling more than 100 req/s on average
+          averageValue: "100"
+
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+
+---
+# ==============================================================================
+# EXAMPLE 2: HPA using Object metric type (pointing at a Service)
+# ==============================================================================
+# Object metrics are associated with a specific Kubernetes object (Service, Ingress, etc.).
+# Use Object type when: a load balancer or ingress controller exports per-service metrics
+# directly (e.g., nginx_ingress_controller_requests pointing at a specific Service).
+#
+# The HPA will query:
+#   /apis/custom.metrics.k8s.io/v1beta1/namespaces/workloads/services/myapp-service/
+#     nginx_ingress_requests_per_second
+#
+# target.type: Value — compares the raw metric value (NOT divided by replicas).
+# target.type: AverageValue — divides metric by current replicas before comparing.
+# ==============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: myapp-object-metrics-hpa
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: myapp-object-metrics-hpa
+    app.kubernetes.io/instance: myapp-object-metrics-hpa
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: myapp
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      HPA scaling myapp-deployment on a Service-level Object metric from the
+      nginx ingress controller (requests per second to myapp-service).
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp-deployment
+
+  minReplicas: 2
+  maxReplicas: 20
+
+  metrics:
+    # -----------------------------------------------------------------------
+    # Object metric: nginx_ingress_requests_per_second at the Service level
+    # -----------------------------------------------------------------------
+    # The Prometheus Adapter maps this to:
+    #   sum(rate(nginx_ingress_controller_requests{service="myapp-service",
+    #     namespace="workloads"}[2m]))
+    #
+    # The 'describedObject' identifies WHICH Kubernetes object the metric
+    # is associated with. The adapter uses this to filter the metric.
+    #
+    # target.type: AverageValue — desired replicas = ceil(metric / averageValue)
+    # -----------------------------------------------------------------------
+    - type: Object
+      object:
+        metric:
+          name: nginx_ingress_requests_per_second
+        # The Kubernetes object this metric is sourced from
+        describedObject:
+          apiVersion: v1
+          kind: Service
+          name: myapp-service
+        target:
+          type: AverageValue
+          # Scale to keep each replica handling at most 150 req/s
+          averageValue: "150"
+
+    # Also scale on CPU to cover non-HTTP workloads
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: AverageUtilization
+          averageUtilization: 70
+
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 60
