@@ -1,0 +1,169 @@
+# ==============================================================================
+# VolumeSnapshot — Point-in-Time Backup of a PersistentVolumeClaim
+# ==============================================================================
+# VolumeSnapshots are a Kubernetes mechanism for creating point-in-time copies
+# of a PersistentVolumeClaim's data. They are implemented by CSI drivers and
+# require three CRDs:
+#   - VolumeSnapshotClass
+#   - VolumeSnapshot
+#   - VolumeSnapshotContent (auto-created by the controller — not defined manually)
+#
+# HOW SNAPSHOTS WORK:
+#   1. You create a VolumeSnapshot referencing a PVC.
+#   2. The snapshot-controller calls the CSI driver's CreateSnapshot RPC.
+#   3. The CSI driver creates a provider-level snapshot (EBS snapshot, GCE PD
+#      snapshot, Azure disk snapshot) — a point-in-time copy of the disk.
+#   4. The snapshot-controller creates a VolumeSnapshotContent object with
+#      the cloud provider's snapshot ID.
+#   5. The VolumeSnapshot's status.readyToUse becomes true when complete.
+#
+# CSI DRIVERS THAT SUPPORT SNAPSHOTS:
+#   - AWS EBS CSI Driver         (ebs.csi.aws.com)
+#   - GCE Persistent Disk CSI   (pd.csi.storage.gke.io)
+#   - Azure Disk CSI             (disk.csi.azure.com)
+#   - Longhorn                   (driver.longhorn.io)
+#   - Ceph RBD                   (rbd.csi.ceph.com)
+#   NOT supported by: NFS, hostPath, local storage (no CSI snapshot API).
+#
+# PREREQUISITES:
+#   1. Install the external-snapshotter controller:
+#      kubectl apply -f https://github.com/kubernetes-csi/external-snapshotter/...
+#   2. Install your CSI driver with snapshot support enabled.
+#   3. Create a VolumeSnapshotClass (see below).
+#
+# RESTORE PROCESS:
+#   Create a PVC with spec.dataSource pointing to the VolumeSnapshot.
+#   See the "restore-from-snapshot" PVC at the bottom of this file.
+#   The CSI driver creates a new volume pre-populated with snapshot data.
+#
+# Apply:
+#   kubectl apply -f volume-snapshot.yml
+#   kubectl get volumesnapshot -n database
+#   kubectl describe volumesnapshot mysql-data-snapshot -n database
+# ==============================================================================
+
+# ── VolumeSnapshotClass — defines which CSI driver handles snapshots ───────────
+# Think of this like a StorageClass, but for snapshots.
+# Create one per CSI driver. Reference it in each VolumeSnapshot.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: csi-aws-vsc
+
+  labels:
+    app.kubernetes.io/name: csi-aws-vsc
+    app.kubernetes.io/instance: csi-aws-vsc
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      VolumeSnapshotClass for the AWS EBS CSI driver. References the
+      ebs.csi.aws.com provisioner to create EBS snapshots. Set as
+      default snapshot class with annotation
+      snapshot.storage.kubernetes.io/is-default-class: "true".
+
+# driver: must match the CSI driver's provisioner name exactly.
+# Find it: kubectl get storageclass -o jsonpath='{.items[*].provisioner}'
+driver: ebs.csi.aws.com
+
+# deletionPolicy:
+#   Delete: deleting the VolumeSnapshot deletes the underlying cloud snapshot.
+#           Use for automatically managed backups (e.g., CronJob-driven snapshots).
+#   Retain: deleting the VolumeSnapshot leaves the cloud snapshot intact.
+#           Use for compliance/audit snapshots that must outlive the K8s object.
+deletionPolicy: Delete
+
+# parameters: CSI driver-specific snapshot parameters.
+# For EBS CSI: can specify snapshot type (standard, io1, etc.)
+# Omit for defaults. Check your CSI driver docs.
+parameters: {}
+
+---
+# ── VolumeSnapshot — creates a snapshot of an existing PVC ────────────────────
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: mysql-data-snapshot
+  namespace: database
+
+  labels:
+    app.kubernetes.io/name: mysql-data-snapshot
+    app.kubernetes.io/instance: mysql-data-snapshot
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Point-in-time snapshot of the mysql-data PVC in the database namespace.
+      Created before a major migration or upgrade. Restore by creating a new
+      PVC with spec.dataSource referencing this VolumeSnapshot name.
+
+spec:
+  # volumeSnapshotClassName: which VolumeSnapshotClass (= which CSI driver) to use.
+  # Must exist in the cluster before applying this VolumeSnapshot.
+  volumeSnapshotClassName: csi-aws-vsc
+
+  source:
+    # persistentVolumeClaimName: the PVC to snapshot.
+    # The PVC must be in the SAME namespace as the VolumeSnapshot.
+    # For a StatefulSet PVC (mysql-data-mysql-0), use that full name.
+    # Reference: core/storage/persistent-volume-claim.yml
+    persistentVolumeClaimName: mysql-data-mysql-0
+
+    # Alternatively, snapshot an existing VolumeSnapshotContent directly:
+    # volumeSnapshotContentName: my-existing-snapshot-content
+
+---
+# ── PVC that restores from a VolumeSnapshot ────────────────────────────────────
+# When this PVC is created, the CSI driver:
+#   1. Creates a new volume from the snapshot data.
+#   2. Binds the new volume to this PVC.
+# The pod that mounts this PVC starts with data from the snapshot point-in-time.
+#
+# Use cases:
+#   - Disaster recovery: restore a database to before a bad migration.
+#   - Test data seeding: create a PVC for each test environment from one snapshot.
+#   - Blue-green database migration: clone production data into a new PVC for testing.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-data-restored
+  namespace: database
+
+  labels:
+    app.kubernetes.io/name: mysql-data-restored
+    app.kubernetes.io/instance: mysql-data-restored
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      PVC restored from the mysql-data-snapshot VolumeSnapshot. The CSI driver
+      creates a new disk volume pre-populated with the snapshot data. Mount this
+      PVC in a pod to access the restored database state.
+
+spec:
+  accessModes:
+    - ReadWriteOncePod  # Only one pod can mount this at a time — correct for databases.
+
+  storageClassName: standard  # Must match the StorageClass of the original PVC.
+
+  resources:
+    requests:
+      storage: 10Gi  # Must be >= the size of the source PVC.
+
+  # dataSource: instructs the CSI driver to pre-populate this PVC from the snapshot.
+  # The VolumeSnapshot must be in the SAME namespace as the PVC.
+  # The VolumeSnapshot must have status.readyToUse: true before this PVC is created.
+  dataSource:
+    kind: VolumeSnapshot
+    name: mysql-data-snapshot
+    # apiGroup for VolumeSnapshot is always snapshot.storage.k8s.io
+    apiGroup: snapshot.storage.k8s.io
