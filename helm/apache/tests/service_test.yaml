@@ -1,0 +1,60 @@
+suite: apache service tests
+templates:
+  - service.yaml
+tests:
+  - it: should be a ClusterIP service by default
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.type
+          value: ClusterIP
+
+  - it: should expose port 80 by default
+    asserts:
+      - equal:
+          path: spec.ports[0].port
+          value: 80
+
+  - it: should target the http named port
+    asserts:
+      - equal:
+          path: spec.ports[0].targetPort
+          value: http
+
+  - it: should have the correct selector labels
+    asserts:
+      - equal:
+          path: spec.selector["app.kubernetes.io/name"]
+          value: apache
+      - equal:
+          path: spec.selector["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+
+  - it: should expose the configured service port
+    set:
+      service.port: 8080
+    asserts:
+      - equal:
+          path: spec.ports[0].port
+          value: 8080
+
+  - it: should support NodePort service type
+    set:
+      service.type: NodePort
+    asserts:
+      - equal:
+          path: spec.type
+          value: NodePort
+
+  - it: should have helm.sh/chart label
+    asserts:
+      - matchRegex:
+          path: metadata.labels["helm.sh/chart"]
+          pattern: ^apache-
+
+  - it: should be in the release namespace
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: NAMESPACE
