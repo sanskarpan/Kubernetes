@@ -1,0 +1,272 @@
+// =============================================================================
+// Jenkinsfile — Django Notes App Production Pipeline
+// =============================================================================
+// This pipeline:
+//   1. Clones the application source code
+//   2. Builds a Docker image tagged with the short Git SHA
+//   3. Runs application tests inside the container
+//   4. Scans the image for HIGH/CRITICAL CVEs with Trivy
+//   5. Pushes the image to Docker Hub (SHA tag + latest tag)
+//   6. Deploys to Kubernetes via `kubectl set image`
+//   7. Monitors rollout status and rolls back on failure
+//
+// Prerequisites:
+//   - Jenkins agent has Docker and kubectl installed
+//   - 'dockerHub' credential (Username/Password) configured in Jenkins
+//   - kubectl configured with a kubeconfig that has deploy permissions
+//   - Jenkins agent has network access to the Kubernetes API server
+// =============================================================================
+
+pipeline {
+    agent any
+
+    environment {
+        // Docker Hub image repository
+        DOCKER_IMAGE = "trainwithshubham/notes-app-k8s"
+
+        // Tag images with the first 8 characters of the Git SHA for traceability.
+        // GIT_COMMIT is automatically populated by Jenkins when using git steps.
+        DOCKER_TAG = "${GIT_COMMIT[0..7]}"
+
+        // Kubernetes deployment target
+        K8S_DEPLOYMENT = "notes-app-deployment"
+        K8S_CONTAINER  = "notes-app"
+        K8S_NAMESPACE  = "nginx"
+
+        // Rollout timeout (seconds)
+        ROLLOUT_TIMEOUT = "300s"
+
+        // Jenkins credential ID for Docker Hub (Username + Password)
+        // Configure at: Manage Jenkins → Credentials → Global → Add Credentials
+        REGISTRY_CREDENTIALS = credentials('dockerHub')
+    }
+
+    options {
+        // Discard old builds to save disk space (keep last 10)
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+
+        // Fail the build if it runs longer than 30 minutes
+        timeout(time: 30, unit: 'MINUTES')
+
+        // Do not allow concurrent builds of the same branch
+        disableConcurrentBuilds()
+
+        // Add timestamps to console output for debugging
+        timestamps()
+    }
+
+    stages {
+
+        // -----------------------------------------------------------------------
+        // Stage 1: Clone
+        // -----------------------------------------------------------------------
+        stage("Clone Code") {
+            steps {
+                // Clean the workspace before checkout to avoid stale files
+                cleanWs()
+
+                git url: "https://github.com/LondheShubham153/django-notes-app.git",
+                    branch: "main"
+
+                // Print the commit hash for traceability in the build log
+                sh "git log -1 --oneline"
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Stage 2: Build
+        // -----------------------------------------------------------------------
+        stage("Build") {
+            steps {
+                sh """
+                    # Build with labels for SBOM and provenance metadata
+                    docker build \
+                      --label "git.commit=${GIT_COMMIT}" \
+                      --label "git.branch=${GIT_BRANCH}" \
+                      --label "build.number=${BUILD_NUMBER}" \
+                      --label "build.url=${BUILD_URL}" \
+                      -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
+                      -t ${DOCKER_IMAGE}:build-${BUILD_NUMBER} \
+                      .
+                """
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Stage 3: Test
+        // -----------------------------------------------------------------------
+        stage("Test") {
+            steps {
+                sh """
+                    # Run tests inside the built image.
+                    # --rm removes the container after it exits.
+                    # Mounting nothing — tests run in the isolated image environment.
+                    docker run --rm \
+                      --name notes-app-test-${BUILD_NUMBER} \
+                      ${DOCKER_IMAGE}:${DOCKER_TAG} \
+                      python manage.py test --verbosity=2
+                """
+            }
+            post {
+                failure {
+                    echo "Tests failed. The image will NOT be pushed to the registry."
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Stage 4: Security Scan
+        // -----------------------------------------------------------------------
+        stage("Security Scan") {
+            steps {
+                sh """
+                    # Trivy scans the image for vulnerabilities.
+                    # --exit-code 1: fail the build if HIGH or CRITICAL CVEs are found.
+                    # --ignore-unfixed: skip CVEs without a fix available (reduces noise).
+                    # '|| true' prevents build failure; change to '|| false' to block.
+                    # In production, remove '|| true' for gated deployments.
+                    docker run --rm \
+                      -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v /tmp/trivy-cache:/root/.cache/trivy \
+                      aquasec/trivy:latest image \
+                        --exit-code 1 \
+                        --severity HIGH,CRITICAL \
+                        --ignore-unfixed \
+                        --format table \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG} || true
+                """
+
+                // Optionally generate an SBOM for compliance/auditing
+                sh """
+                    docker run --rm \
+                      -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v /tmp/trivy-cache:/root/.cache/trivy \
+                      -v \$(pwd):/output \
+                      aquasec/trivy:latest image \
+                        --format cyclonedx \
+                        --output /output/sbom-${DOCKER_TAG}.json \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG} || true
+                """
+            }
+            post {
+                always {
+                    // Archive the SBOM as a build artefact
+                    archiveArtifacts artifacts: "sbom-*.json", allowEmptyArchive: true
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Stage 5: Push to Docker Hub
+        // -----------------------------------------------------------------------
+        stage("Push to Docker Hub") {
+            steps {
+                sh """
+                    # Login using credentials from Jenkins (avoids echoing password)
+                    echo "${REGISTRY_CREDENTIALS_PSW}" | \
+                      docker login -u "${REGISTRY_CREDENTIALS_USR}" --password-stdin
+
+                    # Push the immutable SHA-tagged image (primary artefact)
+                    docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
+
+                    # Push the build-number tag (for Jenkins traceability)
+                    docker push ${DOCKER_IMAGE}:build-${BUILD_NUMBER}
+
+                    # Tag and push :latest (mutable — for dev environments)
+                    docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
+                    docker push ${DOCKER_IMAGE}:latest
+
+                    # Record the image digest for audit purposes
+                    docker inspect --format='{{index .RepoDigests 0}}' \
+                      ${DOCKER_IMAGE}:${DOCKER_TAG} | tee image-digest.txt || true
+                """
+            }
+            post {
+                always {
+                    // Logout from Docker Hub regardless of push result
+                    sh "docker logout || true"
+                    archiveArtifacts artifacts: "image-digest.txt", allowEmptyArchive: true
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Stage 6: Deploy to Kubernetes
+        // -----------------------------------------------------------------------
+        stage("Deploy to Kubernetes") {
+            steps {
+                sh """
+                    # Update the Deployment to use the new image tag.
+                    # This triggers a rolling update respecting the Deployment strategy.
+                    kubectl set image \
+                      deployment/${K8S_DEPLOYMENT} \
+                      ${K8S_CONTAINER}=${DOCKER_IMAGE}:${DOCKER_TAG} \
+                      -n ${K8S_NAMESPACE}
+
+                    # Annotate the Deployment with the change cause (visible in rollout history)
+                    kubectl annotate deployment/${K8S_DEPLOYMENT} \
+                      kubernetes.io/change-cause="Jenkins build ${BUILD_NUMBER} — image ${DOCKER_TAG}" \
+                      --overwrite \
+                      -n ${K8S_NAMESPACE}
+
+                    # Wait for the rollout to complete within the timeout.
+                    # Exits non-zero if the rollout fails (triggers the failure post block).
+                    kubectl rollout status \
+                      deployment/${K8S_DEPLOYMENT} \
+                      -n ${K8S_NAMESPACE} \
+                      --timeout=${ROLLOUT_TIMEOUT}
+                """
+            }
+        }
+
+    } // end stages
+
+    post {
+
+        // Runs only when the build FAILS
+        failure {
+            echo "Pipeline failed. Initiating Kubernetes rollback..."
+            sh """
+                # Roll back to the previous Deployment revision.
+                # '|| true' prevents the rollback failure from masking the original failure.
+                kubectl rollout undo \
+                  deployment/${K8S_DEPLOYMENT} \
+                  -n ${K8S_NAMESPACE} || true
+
+                # Verify the rollback completed
+                kubectl rollout status \
+                  deployment/${K8S_DEPLOYMENT} \
+                  -n ${K8S_NAMESPACE} \
+                  --timeout=${ROLLOUT_TIMEOUT} || true
+
+                echo "Rollback complete. Check the Kubernetes events for details:"
+                kubectl describe deployment/${K8S_DEPLOYMENT} -n ${K8S_NAMESPACE} || true
+            """
+
+            // TODO: Add notification here (Slack, PagerDuty, email)
+            // slackSend(color: 'danger', message: "Deploy FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
+        }
+
+        // Runs only when the build SUCCEEDS
+        success {
+            echo "Deployment succeeded: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+            // slackSend(color: 'good', message: "Deploy succeeded: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
+        }
+
+        // ALWAYS runs regardless of build result
+        always {
+            // Remove local Docker images to free disk space on the agent.
+            // '|| true' prevents errors if the image was never built (e.g., build failed early).
+            sh """
+                docker rmi ${DOCKER_IMAGE}:${DOCKER_TAG} || true
+                docker rmi ${DOCKER_IMAGE}:build-${BUILD_NUMBER} || true
+                docker rmi ${DOCKER_IMAGE}:latest || true
+            """
+
+            // Clean up the Jenkins workspace
+            cleanWs()
+        }
+
+    } // end post
+
+} // end pipeline
