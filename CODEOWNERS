@@ -1,0 +1,16 @@
+# CODEOWNERS
+# Each line is a file pattern followed by one or more owners.
+# Order matters: the last matching pattern takes precedence.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything in the repository
+* @sanskarpan
+
+# GitHub configuration and CI workflows
+/.github/ @sanskarpan
+
+# Helm charts
+/helm/ @sanskarpan
+
+# Security policies and manifests
+/platform/security/ @sanskarpan
