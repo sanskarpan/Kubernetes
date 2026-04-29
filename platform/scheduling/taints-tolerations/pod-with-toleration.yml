@@ -1,0 +1,161 @@
+# ==============================================================================
+# POD WITH TOLERATION — DEDICATED DATABASE NODE
+# ==============================================================================
+# This pod tolerates the "dedicated=database:NoSchedule" taint, allowing it
+# to be scheduled on nodes reserved for database workloads.
+#
+# Matching taint — apply to the target node before deploying this pod:
+#   kubectl taint nodes <node-name> dedicated=database:NoSchedule
+#
+# The toleration in this pod spec ALLOWS scheduling on that tainted node.
+# To GUARANTEE placement on the database node (not just allow it), combine
+# this toleration with a nodeAffinity or nodeSelector rule (see node-affinity/).
+#
+# Verify the taint is applied:
+#   kubectl describe node <node-name> | grep -A 5 Taints
+#
+# Apply this pod:
+#   kubectl apply -f pod-with-toleration.yml
+#
+# Verify toleration is applied and pod is on the right node:
+#   kubectl get pod tolerated-pod -n workloads -o wide
+#   kubectl describe pod tolerated-pod -n workloads | grep -A 5 Tolerations
+# ==============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tolerated-pod
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: tolerated-pod
+    app.kubernetes.io/component: database-client
+    app.kubernetes.io/part-of: data-platform
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      Demo pod that tolerates the dedicated=database:NoSchedule taint.
+      It can be scheduled on database-reserved nodes. In production, pair
+      this toleration with a nodeAffinity required rule to pin the pod
+      exclusively to database nodes rather than merely permitting it.
+spec:
+  # ---------------------------------------------------------------------------
+  # tolerations — grant this pod permission to be scheduled on tainted nodes
+  #
+  # A toleration matches a taint when key, operator, value, and effect all match.
+  # ---------------------------------------------------------------------------
+  tolerations:
+    # This toleration matches the taint:
+    #   kubectl taint nodes <node-name> dedicated=database:NoSchedule
+    #
+    # - key: "dedicated"         → matches the taint key
+    # - operator: "Equal"        → requires value to match exactly
+    # - value: "database"        → matches the taint value
+    # - effect: "NoSchedule"     → matches the NoSchedule effect only
+    #
+    # If the taint used effect: NoExecute instead, this toleration would NOT
+    # protect running pods from eviction — you'd need effect: NoExecute here too.
+    - key: dedicated
+      operator: Equal
+      value: database
+      effect: NoSchedule
+
+    # Optional: also tolerate NoExecute for the same key so the pod is not
+    # evicted if the node's taint is upgraded from NoSchedule to NoExecute.
+    # Uncomment if your node management scripts change taint effects.
+    # - key: dedicated
+    #   operator: Equal
+    #   value: database
+    #   effect: NoExecute
+    #   tolerationSeconds: 3600  # Stay up to 1 hour before eviction
+
+  # ---------------------------------------------------------------------------
+  # Pod-level security context
+  # Applied to all containers in this pod unless overridden per-container.
+  # ---------------------------------------------------------------------------
+  securityContext:
+    runAsNonRoot: true           # Enforce non-root execution at pod level
+    runAsUser: 1000              # UID 1000 — unprivileged user
+    fsGroup: 2000                # GID 2000 owns mounted volumes
+    seccompProfile:
+      type: RuntimeDefault       # Enable default seccomp syscall filtering
+
+  # ---------------------------------------------------------------------------
+  # Containers
+  # ---------------------------------------------------------------------------
+  containers:
+    - name: app
+      image: nginx:1.27.0        # Pin to exact version — never use :latest in production
+
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+
+      # -----------------------------------------------------------------------
+      # Container-level security context
+      # Tighten permissions beyond the pod-level context.
+      # -----------------------------------------------------------------------
+      securityContext:
+        allowPrivilegeEscalation: false   # Prevent setuid/setgid escalation
+        readOnlyRootFilesystem: true      # Container cannot write to its own root FS
+        capabilities:
+          drop:
+            - ALL                         # Drop every Linux capability
+
+      # -----------------------------------------------------------------------
+      # Resource requests and limits
+      # - requests: what the scheduler reserves; HPA/VPA use these as baseline
+      # - limits.memory: hard cap — process is OOMKilled if exceeded
+      # - limits.cpu: intentionally OMITTED — CPU limits cause throttling even
+      #   when node has spare cycles; use requests to influence scheduling instead
+      # -----------------------------------------------------------------------
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          memory: 128Mi  # Memory limit equals request (Guaranteed QoS class)
+
+      # -----------------------------------------------------------------------
+      # Lifecycle hooks
+      # preStop: Give the container a brief pause before SIGTERM is sent.
+      # This allows load balancers and service meshes (e.g., Envoy) to drain
+      # connections from this pod before it starts shutting down, preventing
+      # in-flight requests from being dropped.
+      # -----------------------------------------------------------------------
+      lifecycle:
+        preStop:
+          exec:
+            command: ["/bin/sh", "-c", "sleep 5"]
+
+      # -----------------------------------------------------------------------
+      # Volume mounts — required because readOnlyRootFilesystem: true prevents
+      # writing to the container root. Mount writable tmpfs for ephemeral data.
+      # -----------------------------------------------------------------------
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: varrun
+          mountPath: /var/run
+
+  # ---------------------------------------------------------------------------
+  # Volumes — emptyDir with medium: Memory creates a tmpfs mount (RAM-backed).
+  # ---------------------------------------------------------------------------
+  volumes:
+    - name: tmp
+      emptyDir: {}
+    - name: varrun
+      emptyDir:
+        medium: Memory
+
+  # ---------------------------------------------------------------------------
+  # Restart policy — Always is standard for long-running pods
+  # ---------------------------------------------------------------------------
+  restartPolicy: Always
+
+  # ---------------------------------------------------------------------------
+  # terminationGracePeriodSeconds — must be longer than preStop sleep + shutdown time.
+  # Default is 30s. Set explicitly to document the intent.
+  # ---------------------------------------------------------------------------
+  terminationGracePeriodSeconds: 30
