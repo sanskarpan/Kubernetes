@@ -99,6 +99,8 @@ jobs:
               ! -path './.github/*' \
               ! -path '*/kustomize/overlays/*' \
               ! -path './platform/observability/prometheus-grafana/values-*.yaml' \
+              ! -name '.pre-commit-config.yaml' \
+              ! -name 'helmfile.yaml' \
             | sort
           )
           if [ -z "$MANIFEST_FILES" ]; then
