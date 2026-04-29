@@ -1,0 +1,173 @@
+# ==============================================================================
+# PROMETHEUSRULE — High CPU Usage and CPU Throttling Alerts
+# ==============================================================================
+# Two related alerts for container CPU:
+#
+# 1. ContainerCPUThrottled (warning) — fires when a container's CPU is being
+#    throttled > 50% of the time for 10 minutes. CPU throttling happens when
+#    a container exceeds its CPU limit. Even at moderate usage, throttling
+#    causes latency spikes. This alert fires before users notice degradation.
+#
+# 2. ContainerHighCPUUsage (critical) — fires when a container is using > 90%
+#    of its CPU limit for 5 minutes. At 90%+, the container is close to the
+#    throttling threshold and the workload may be under-resourced.
+#
+# Why both alerts?
+#   - Throttling can happen even at moderate CPU usage if the limit is too low.
+#     A container using 0.5 cores against a 0.5 core limit is always throttled.
+#   - High CPU usage (>90% of limit) doesn't always cause throttling (depends
+#     on burst behavior), but indicates the container needs more CPU headroom.
+#   - Together they cover: wrong limits (throttled at low usage) AND
+#     genuinely high load (high usage near limit).
+#
+# Prerequisites:
+#   - kube-state-metrics and cAdvisor metrics available
+#   - Containers must have resources.limits.cpu set for throttle metrics to work
+#
+# Apply:
+#   kubectl apply -f high-cpu.yaml
+# ==============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: high-cpu-alert
+  namespace: monitoring
+  labels:
+    release: monitoring
+    app.kubernetes.io/name: high-cpu-alert
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/part-of: monitoring-platform
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      PrometheusRule with two CPU-related alerts: CPU throttling > 50% for 10m
+      (warning) and CPU usage > 90% of limit for 5m (critical).
+spec:
+  groups:
+    - name: cpu-alerts
+      interval: 30s
+
+      rules:
+        # -----------------------------------------------------------------------
+        # Alert 1: ContainerCPUThrottled — WARNING
+        # -----------------------------------------------------------------------
+        # CPU throttling occurs when a container's CPU usage exceeds its limit.
+        # The Linux kernel CFS scheduler uses cpu.cfs_quota_us to enforce limits.
+        # When throttled, the container's processes are paused until the next
+        # quota period — this causes latency spikes even at low average utilization.
+        #
+        # Metric explanation:
+        #   container_cpu_cfs_throttled_periods_total: periods where CPU was throttled
+        #   container_cpu_cfs_periods_total: total number of CFS periods evaluated
+        #
+        # throttle_ratio = throttled_periods / total_periods (over a 5-minute window)
+        # Expressed as 0–100 (multiply by 100 for percentage)
+        #
+        # Filter out:
+        #   container!="": skip pause containers (empty name)
+        #   container!="POD": skip pod-level stats
+        # -----------------------------------------------------------------------
+        - alert: ContainerCPUThrottled
+
+          expr: |
+            (
+              rate(container_cpu_cfs_throttled_periods_total{
+                container!="",
+                container!="POD"
+              }[5m])
+              /
+              rate(container_cpu_cfs_periods_total{
+                container!="",
+                container!="POD"
+              }[5m])
+            ) * 100 > 50
+
+          # 10 minutes: throttling is common during startup bursts; sustained
+          # throttling over 10 minutes indicates a genuine limit misconfiguration.
+          for: 10m
+
+          labels:
+            severity: warning
+
+          annotations:
+            summary: >
+              Container {{ $labels.container }} in pod {{ $labels.pod }} is CPU throttled
+
+            description: >
+              Container {{ $labels.container }} in pod {{ $labels.pod }}
+              (namespace: {{ $labels.namespace }}) is being CPU throttled
+              {{ $value | printf "%.1f" }}% of the time over the last 5 minutes.
+
+              CPU throttling causes latency spikes even when average CPU usage appears low.
+              This usually means the container's CPU limit is too low for its actual workload.
+
+              Remediation:
+                1. Check the container's CPU usage vs limit:
+                   kubectl top pod {{ $labels.pod }} -n {{ $labels.namespace }} --containers
+                2. Review CPU limit in the Deployment spec and consider increasing it
+                3. If the workload is bursty, consider removing the CPU limit entirely
+                   (use requests only for scheduling) — see resource-quotas/README.md
+
+            runbook_url: "https://runbooks.example.com/alerts/container-cpu-throttled"
+
+        # -----------------------------------------------------------------------
+        # Alert 2: ContainerHighCPUUsage — CRITICAL
+        # -----------------------------------------------------------------------
+        # Fires when a container is using more than 90% of its CPU limit.
+        # At 90%+ of limit, the container is moments away from throttling
+        # and may already be experiencing degraded performance.
+        #
+        # Metric:
+        #   rate(container_cpu_usage_seconds_total[5m]): actual CPU usage in cores
+        #   kube_pod_container_resource_limits{resource="cpu"}: CPU limit in cores
+        #
+        # The division gives usage as a fraction of the limit (0–1).
+        # Multiply by 100 for percentage. Alert when > 90%.
+        #
+        # Note: This alert requires CPU limits to be set on the container.
+        # Containers without CPU limits will not appear in kube_pod_container_resource_limits.
+        # -----------------------------------------------------------------------
+        - alert: ContainerHighCPUUsage
+
+          expr: |
+            (
+              rate(container_cpu_usage_seconds_total{
+                container!="",
+                container!="POD"
+              }[5m])
+              /
+              on(namespace, pod, container)
+              kube_pod_container_resource_limits{
+                resource="cpu",
+                container!=""
+              }
+            ) * 100 > 90
+
+          # 5 minutes: high CPU usage is more immediately actionable than throttling.
+          for: 5m
+
+          labels:
+            severity: critical
+
+          annotations:
+            summary: >
+              Container {{ $labels.container }} in pod {{ $labels.pod }} has high CPU usage
+
+            description: >
+              Container {{ $labels.container }} in pod {{ $labels.pod }}
+              (namespace: {{ $labels.namespace }}) is using
+              {{ $value | printf "%.1f" }}% of its CPU limit for more than 5 minutes.
+
+              The container is at risk of CPU throttling and service degradation.
+
+              Immediate actions:
+                1. Check current CPU usage:
+                   kubectl top pod {{ $labels.pod }} -n {{ $labels.namespace }} --containers
+                2. Check if HPA is scaling the deployment to handle increased load:
+                   kubectl get hpa -n {{ $labels.namespace }}
+                3. If load is legitimately high, increase the CPU request/limit
+                   or allow HPA to scale out by verifying minReplicas and maxReplicas
+
+            runbook_url: "https://runbooks.example.com/alerts/container-high-cpu"
