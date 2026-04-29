@@ -1,0 +1,210 @@
+# ==============================================================================
+# basic-pod.yml
+# A production-grade nginx Pod demonstrating all mandatory security contexts,
+# resource management, and labeling standards.
+#
+# Key design decisions explained inline:
+#   - readOnlyRootFilesystem: true requires emptyDir volumes for nginx's
+#     writable directories (/tmp, /var/run, /var/cache/nginx)
+#   - automountServiceAccountToken: false prevents credential exposure
+#   - runAsNonRoot / runAsUser: 1000 enforces least-privilege execution
+#   - preStop sleep gives the load balancer time to drain connections before
+#     the container receives SIGTERM
+#
+# This is an INTRODUCTORY pod (no tolerations, no affinity) to keep it simple.
+# In production you would wrap this in a Deployment and add anti-affinity rules.
+#
+# Usage:
+#   kubectl apply -f basic-pod.yml
+#   kubectl port-forward pod/nginx-basic 8080:80 -n workloads
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: workloads
+  labels:
+    # Namespace-level labels for tooling (cost allocation, GitOps targeting, etc.)
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Namespace for workload demonstration resources"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-basic
+  namespace: workloads
+
+  # ─── REQUIRED LABELS ────────────────────────────────────────────────────────
+  # These labels are mandatory on every resource for:
+  #   - kubectl label selectors / queries
+  #   - Service selectors
+  #   - Cost allocation tooling (Kubecost, OpenCost)
+  #   - Argo CD application matching
+  labels:
+    app.kubernetes.io/name: nginx-basic       # Canonical name of the app
+    app.kubernetes.io/instance: nginx-basic   # Unique instance name within the cluster
+    app.kubernetes.io/version: "1.0.0"        # Current version of the application
+    app.kubernetes.io/component: web          # Functional role (web, worker, database, cache)
+    app.kubernetes.io/part-of: kube-platform  # Higher-level system this belongs to
+    app.kubernetes.io/managed-by: kubectl     # Tool that manages this resource
+
+  # ─── REQUIRED ANNOTATIONS ───────────────────────────────────────────────────
+  annotations:
+    kubernetes.io/description: "Basic nginx pod demonstrating production-grade security contexts and resource management"
+
+spec:
+  # ─── SERVICE ACCOUNT ────────────────────────────────────────────────────────
+  # Disable automatic mounting of the service account token. By default, Kubernetes
+  # mounts a JWT token granting API access into every Pod. This is a security risk
+  # for pods that don't need to call the Kubernetes API. Only enable when the pod
+  # explicitly needs to interact with the cluster API.
+  automountServiceAccountToken: false
+
+  # ─── GRACEFUL SHUTDOWN ──────────────────────────────────────────────────────
+  # kubelet waits this long for containers to exit after SIGTERM before sending
+  # SIGKILL. Must be greater than the preStop sleep + application shutdown time.
+  # 60 seconds is a safe default for most web servers.
+  terminationGracePeriodSeconds: 60
+
+  # ─── POD-LEVEL SECURITY CONTEXT ─────────────────────────────────────────────
+  # These settings apply to ALL containers in the pod unless overridden at the
+  # container level.
+  securityContext:
+    # Refuse to start any container that would run as UID 0 (root).
+    # The admission controller will reject the pod if the image's default user is root
+    # and no runAsUser is set. This is the primary guard against privilege escalation.
+    runAsNonRoot: true
+
+    # The UID for all container processes. This user does not need to exist in
+    # /etc/passwd inside the container (Kubernetes handles the UID mapping).
+    runAsUser: 1000
+
+    # The GID applied to all mounted volumes. Files created in those volumes will
+    # be owned by this GID, allowing the container processes (runAsUser: 1000)
+    # to read/write volume files even if the image's user GID differs.
+    fsGroup: 2000
+
+    # Apply the container runtime's default seccomp (syscall filtering) profile.
+    # RuntimeDefault blocks dangerous syscalls (e.g., ptrace, mount, reboot) that
+    # containerized applications should never need. This is a significant security
+    # improvement over the historical default of "unconfined".
+    seccompProfile:
+      type: RuntimeDefault
+
+  # ─── VOLUMES ─────────────────────────────────────────────────────────────────
+  # Because readOnlyRootFilesystem: true makes the container's root filesystem
+  # immutable, nginx cannot write to its default temp/cache/run directories.
+  # We provide writable emptyDir volumes mounted at those paths.
+  #
+  # emptyDir is created fresh for each Pod instance and deleted when the Pod
+  # is removed — perfectly suited for ephemeral scratch space.
+  volumes:
+  - name: nginx-tmp
+    # Nginx writes temporary files (client body, proxy buffers) to /tmp
+    emptyDir: {}
+  - name: nginx-run
+    # Nginx writes its PID file to /var/run/nginx.pid
+    emptyDir: {}
+  - name: nginx-cache
+    # Nginx uses /var/cache/nginx for proxy cache and other caches
+    emptyDir: {}
+
+  containers:
+  - name: nginx
+    # Pin to a specific digest in production to prevent image drift.
+    # Using a tag here for readability; replace with:
+    # nginx@sha256:<digest> in a real production environment.
+    image: nginx:1.25-alpine
+
+    # Expose the port nginx listens on. This is informational only — Kubernetes
+    # does not use this to configure networking. The actual port binding is done
+    # by nginx's configuration.
+    ports:
+    - containerPort: 80
+      protocol: TCP
+      name: http
+
+    # ─── CONTAINER-LEVEL SECURITY CONTEXT ─────────────────────────────────────
+    securityContext:
+      # Prevents the container from gaining additional privileges via setuid/setgid
+      # binaries or the NO_NEW_PRIVS prctl flag. Hardened systems should always
+      # set this to false (deny privilege escalation).
+      allowPrivilegeEscalation: false
+
+      # Makes the container's root filesystem read-only at the kernel level.
+      # Prevents an attacker who gains code execution from modifying the binary,
+      # installing tools, or writing malware to disk. Any writes must go to
+      # explicitly declared volumes (emptyDir, PVC, etc.).
+      readOnlyRootFilesystem: true
+
+      # Drop ALL Linux capabilities. By default, containers inherit a set of ~14
+      # capabilities (NET_RAW, CHOWN, SETUID, etc.). Dropping all of them and
+      # adding back only what's needed reduces attack surface dramatically.
+      capabilities:
+        drop:
+        - ALL
+        # Note: nginx:alpine is compiled to use port 80 (requires NET_BIND_SERVICE
+        # if running as non-root). To avoid this, configure nginx to listen on
+        # port 8080 and remove this capability entirely.
+        add:
+        - NET_BIND_SERVICE
+
+    # ─── RESOURCE MANAGEMENT ──────────────────────────────────────────────────
+    resources:
+      requests:
+        # The scheduler uses requests to find a node with sufficient capacity.
+        # Set requests to the typical (P50) consumption of the container.
+        memory: "128Mi"
+        cpu: "100m"     # 100 millicores = 0.1 vCPU
+      limits:
+        # Memory limit == memory request → Guaranteed QoS class.
+        # This protects the Pod from OOM eviction by giving it the highest eviction
+        # priority. The container is OOM-killed if it exceeds this limit.
+        memory: "128Mi"
+        # CPU limit is intentionally OMITTED.
+        # CPU is a compressible resource: exceeding the limit causes throttling,
+        # not termination. CPU throttling degrades latency without warning.
+        # Monitor cpu_throttled_seconds_total in Prometheus to detect issues.
+
+    # ─── VOLUME MOUNTS ────────────────────────────────────────────────────────
+    # Mount the emptyDir volumes at the paths nginx needs to write to.
+    # Without these, nginx fails to start with "permission denied" errors because
+    # readOnlyRootFilesystem prevents writing to the image's own directories.
+    volumeMounts:
+    - name: nginx-tmp
+      mountPath: /tmp
+    - name: nginx-run
+      mountPath: /var/run
+    - name: nginx-cache
+      mountPath: /var/cache/nginx
+
+    # ─── LIFECYCLE HOOKS ──────────────────────────────────────────────────────
+    lifecycle:
+      preStop:
+        exec:
+          # Sleep for 5 seconds before nginx receives SIGTERM.
+          # This gives the Endpoints controller time to remove this Pod's IP from
+          # the Service's EndpointSlice, so the load balancer stops sending new
+          # requests here before nginx starts shutting down.
+          # Without this, in-flight requests at the load balancer level may still
+          # be routed to this Pod after it has begun terminating.
+          command: ["/bin/sh", "-c", "sleep 5"]
+
+    # ─── PROBES ───────────────────────────────────────────────────────────────
+    # Note: For a basic pod demo, only a simple liveness probe is included.
+    # The nginx-deployment.yml shows the full startup + readiness + liveness set.
+    livenessProbe:
+      httpGet:
+        path: /
+        port: 80
+      # Wait 10 seconds after container start before the first probe attempt.
+      # Prevents false-positive restarts during image initialization.
+      initialDelaySeconds: 10
+      # Run the probe every 15 seconds.
+      periodSeconds: 15
+      # Require 3 consecutive failures before restarting the container.
+      # A single transient failure should not cause a restart.
+      failureThreshold: 3
+      # A probe must respond within 3 seconds or it's considered failed.
+      timeoutSeconds: 3
