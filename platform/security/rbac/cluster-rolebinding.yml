@@ -1,0 +1,68 @@
+# ==============================================================================
+# CLUSTERROLEBINDING — node-reader-binding
+# ==============================================================================
+# Binds the "cluster-node-reader" ClusterRole to the "monitoring-agent"
+# ServiceAccount in the "monitoring" namespace.
+#
+# A ClusterRoleBinding grants permissions CLUSTER-WIDE — the bound subject
+# can act on the specified resources in ALL namespaces (for namespaced resources)
+# or on all cluster-scoped resources (for cluster-scoped resources like nodes).
+#
+# When to use ClusterRoleBinding vs RoleBinding:
+#   - Use ClusterRoleBinding when the subject needs access to cluster-scoped
+#     resources (nodes, PVs, StorageClasses) — these can ONLY be granted via
+#     ClusterRoleBinding (RoleBinding cannot grant cluster-scoped access).
+#   - Use ClusterRoleBinding when the subject legitimately needs access to
+#     resources across ALL namespaces (e.g., a cluster-wide monitoring agent).
+#   - Use RoleBinding in all other cases — even when binding a ClusterRole,
+#     a RoleBinding limits the scope to the binding's namespace.
+#
+# Apply:
+#   kubectl apply -f cluster-rolebinding.yml
+#
+# Verify:
+#   kubectl auth can-i list nodes \
+#     --as=system:serviceaccount:monitoring:monitoring-agent
+#   # Expected: yes
+#
+#   kubectl auth can-i list persistentvolumes \
+#     --as=system:serviceaccount:monitoring:monitoring-agent
+#   # Expected: yes
+#
+#   kubectl auth can-i delete nodes \
+#     --as=system:serviceaccount:monitoring:monitoring-agent
+#   # Expected: no  (only get, list, watch granted)
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  # ClusterRoleBinding has no namespace field — it is a cluster-scoped resource
+  name: node-reader-binding
+  labels:
+    app.kubernetes.io/name: node-reader-binding
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: monitoring-platform
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      ClusterRoleBinding granting the monitoring-agent ServiceAccount (monitoring
+      namespace) read-only access to nodes, PersistentVolumes, StorageClasses,
+      and Namespaces cluster-wide. Required for node-level monitoring agents that
+      need to enumerate cluster infrastructure.
+subjects:
+  # The ServiceAccount receiving cluster-wide permissions.
+  # For ClusterRoleBinding, the subject's namespace must be specified — a
+  # ServiceAccount in the "monitoring" namespace is a different identity than
+  # one named "monitoring-agent" in the "workloads" namespace.
+  - kind: ServiceAccount
+    name: monitoring-agent
+    namespace: monitoring   # ServiceAccount must exist in this namespace
+
+roleRef:
+  # roleRef must reference a ClusterRole when binding cluster-scoped permissions.
+  # A ClusterRoleBinding cannot reference a namespaced Role.
+  kind: ClusterRole
+  name: cluster-node-reader
+  apiGroup: rbac.authorization.k8s.io
