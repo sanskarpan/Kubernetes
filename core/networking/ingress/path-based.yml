@@ -1,0 +1,122 @@
+# ==============================================================================
+# Path-Based Ingress — Single Host, Multiple Backend Services
+# ==============================================================================
+# Routes HTTP traffic to different Services based on the URL path.
+# All paths share a single hostname (or no hostname, matching all hosts).
+#
+# Traffic flow:
+#   <external-ip>/api/* → api-service:8080 (path is rewritten: /api/foo → /foo)
+#   <external-ip>/web/* → web-service:80   (path is rewritten: /web/foo → /foo)
+#
+# Prerequisites:
+#   1. An Ingress Controller must be installed (e.g., ingress-nginx).
+#      kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/
+#        main/deploy/static/provider/cloud/deploy.yaml
+#   2. The Services api-service and web-service must exist in networking-demo.
+#
+# Apply:
+#   kubectl apply -f path-based.yml
+#
+# Verify:
+#   kubectl get ingress path-based-ingress -n networking-demo
+#   # Wait for the ADDRESS column to be populated with the external IP.
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: path-based-ingress
+  namespace: networking-demo
+
+  labels:
+    app.kubernetes.io/name: path-based-ingress
+    app.kubernetes.io/instance: path-based-ingress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Path-based Ingress routing /api traffic to api-service and /web traffic
+      to web-service. Uses nginx rewrite-target to strip the path prefix before
+      forwarding to backends.
+
+    # --------------------------------------------------------------------------
+    # rewrite-target: strips the captured group from the path before forwarding.
+    #
+    # How it works together with the path regex below:
+    #   Path regex: /api(/|$)(.*)
+    #   Capture group $2 captures everything after /api/
+    #   rewrite-target: /$2 forwards only the captured suffix.
+    #
+    #   Request:  GET /api/users/42
+    #   Backend sees: GET /users/42
+    #
+    # Without this annotation, the backend would receive GET /api/users/42
+    # which may not match any routes in your API service.
+    # --------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+
+    # use-regex: true enables regular expressions in path definitions.
+    # Required when using capture groups in rewrite-target.
+    nginx.ingress.kubernetes.io/use-regex: "true"
+
+    # proxy-body-size: maximum allowed size of the client request body.
+    # Default is 1m. Increase for file upload endpoints.
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # proxy-read-timeout: seconds nginx waits for a response from the backend.
+    # Increase for slow backend operations (large queries, heavy computation).
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+spec:
+  # ingressClassName is REQUIRED since Kubernetes 1.18.
+  # It references an IngressClass resource that identifies which controller
+  # should handle this Ingress. Using "nginx" corresponds to the ingress-nginx
+  # controller. If you have multiple controllers (e.g., internal-nginx and
+  # external-nginx), you can target the correct one here.
+  ingressClassName: nginx
+
+  rules:
+    # Omitting 'host' means this rule matches ALL hostnames.
+    # This is fine for path-based routing in development.
+    # In production, always specify a host to prevent unexpected routing.
+    - http:
+        paths:
+          # --- /api route ---
+          - path: /api(/|$)(.*)
+            # Prefix: the path is treated as a prefix match (split by /).
+            #   /api matches: /api, /api/, /api/users, /api/users/42
+            #   /api does NOT match: /apiv2, /api-docs (would need /api or exact)
+            #
+            # ImplementationSpecific: enables regex when use-regex: "true" is set.
+            # We use ImplementationSpecific here because Prefix does not support
+            # capture groups. The regex behaviour is nginx-specific.
+            pathType: ImplementationSpecific
+
+            backend:
+              service:
+                name: api-service     # Must exist in the same namespace.
+                port:
+                  number: 8080        # ClusterIP port on api-service.
+
+          # --- /web route ---
+          - path: /web(/|$)(.*)
+            pathType: ImplementationSpecific
+
+            backend:
+              service:
+                name: web-service     # Must exist in the same namespace.
+                port:
+                  number: 80
+
+          # --- Default catch-all (optional) ---
+          # Requests that don't match /api or /web are sent to web-service.
+          # Without this, nginx returns 404 for unmatched paths.
+          # - path: /
+          #   pathType: Prefix
+          #   backend:
+          #     service:
+          #       name: web-service
+          #       port:
+          #         number: 80

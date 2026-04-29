@@ -1,0 +1,190 @@
+# ==============================================================================
+# TLS Ingress — HTTPS with Certificate Termination
+# ==============================================================================
+# Configures the Ingress Controller to terminate TLS for secure.example.com.
+# The certificate and private key are stored in a Kubernetes Secret of type
+# kubernetes.io/tls. The Ingress Controller mounts this Secret and configures
+# its proxy (nginx) with it.
+#
+# TLS TERMINATION MODEL:
+#   Client ──(HTTPS)──► Ingress Controller ──(HTTP)──► Backend Pod
+#   The segment from the Ingress Controller to the pod is plain HTTP.
+#   This is acceptable when the cluster network is trusted (mTLS via a
+#   service mesh handles pod-to-pod encryption in higher-security environments).
+#   For end-to-end TLS, configure the backend to serve HTTPS and annotate:
+#     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+#
+# HOW TO CREATE THE TLS SECRET:
+# ──────────────────────────────
+# Option 1: Self-signed certificate (LOCAL DEV ONLY — browsers will warn)
+#
+#   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#     -keyout tls.key \
+#     -out tls.crt \
+#     -subj "/CN=secure.example.com/O=Dev" \
+#     -addext "subjectAltName=DNS:secure.example.com"
+#
+#   kubectl create secret tls tls-secret \
+#     --cert=tls.crt \
+#     --key=tls.key \
+#     -n networking-demo
+#
+# Option 2: cert-manager with Let's Encrypt (PRODUCTION RECOMMENDED)
+#   Install cert-manager, create a ClusterIssuer, then add to this Ingress:
+#     annotations:
+#       cert-manager.io/cluster-issuer: "letsencrypt-prod"
+#   cert-manager will automatically create and rotate the tls-secret Secret.
+#   See the ingress README.md for the full ClusterIssuer configuration.
+#
+# Option 3: Import an existing certificate from a CA
+#   kubectl create secret tls tls-secret \
+#     --cert=/path/to/fullchain.pem \
+#     --key=/path/to/privkey.pem \
+#     -n networking-demo
+#
+# Verify the secret was created correctly:
+#   kubectl get secret tls-secret -n networking-demo
+#   kubectl describe secret tls-secret -n networking-demo
+#   # Should show: tls.crt and tls.key fields
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tls-ingress
+  namespace: networking-demo
+
+  labels:
+    app.kubernetes.io/name: tls-ingress
+    app.kubernetes.io/instance: tls-ingress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      TLS-terminating Ingress for secure.example.com. Terminates HTTPS at the
+      nginx Ingress Controller using the certificate stored in tls-secret.
+      All HTTP requests are permanently redirected to HTTPS (301).
+
+    # ssl-redirect: Redirects all HTTP requests to HTTPS with a 308 redirect
+    # (permanent, method-preserving). This means http://secure.example.com
+    # automatically redirects to https://secure.example.com.
+    # Set to "false" only if you explicitly need to serve both HTTP and HTTPS.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+    # force-ssl-redirect: Even if the request arrives over HTTP at the Ingress
+    # Controller (e.g., because the LB terminates TLS and forwards HTTP),
+    # force a redirect to HTTPS. Prevents HTTPS → HTTP downgrade via the LB.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # hsts: Add Strict-Transport-Security header to instruct browsers to always
+    # use HTTPS for this domain for the next year (31536000 seconds).
+    # Do NOT enable HSTS until you are confident your TLS setup is stable —
+    # if you disable HTTPS later, browsers that cached the HSTS header will
+    # refuse to connect over HTTP for up to a year.
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"
+    nginx.ingress.kubernetes.io/hsts-preload: "true"
+
+    # If using cert-manager for automatic certificate management, add:
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+spec:
+  ingressClassName: nginx
+
+  # tls block: associates a hostname with a TLS certificate Secret.
+  # The Ingress Controller watches this Secret and configures its TLS listener.
+  # If the Secret is rotated (e.g., by cert-manager), the controller hot-reloads
+  # the certificate without downtime.
+  tls:
+    - hosts:
+        - secure.example.com  # Must match the CN or SAN in the certificate.
+                               # If they don't match, clients get a cert warning.
+      secretName: tls-secret  # Name of the kubernetes.io/tls Secret in the
+                               # SAME namespace as this Ingress resource.
+                               # The Secret must contain:
+                               #   tls.crt: the full certificate chain (PEM)
+                               #   tls.key: the private key (PEM)
+
+  rules:
+    - host: secure.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service     # Backend Service in the same namespace.
+                port:
+                  number: 80
+
+          # Add additional paths for sub-routing on this host:
+          # - path: /api
+          #   pathType: Prefix
+          #   backend:
+          #     service:
+          #       name: api-service
+          #       port:
+          #         number: 8080
+
+---
+# ==============================================================================
+# TLS Secret — Local Development (Self-Signed)
+# ==============================================================================
+# IMPORTANT: This Secret contains a PLACEHOLDER certificate. Replace tls.crt
+# and tls.key with real base64-encoded values before applying.
+#
+# In production, do NOT commit TLS private keys to git. Use cert-manager
+# (which auto-creates the Secret) or store the key in a secrets manager
+# (Vault, AWS Secrets Manager) and sync it with External Secrets Operator.
+#
+# To generate real base64 values:
+#   cat tls.crt | base64 -w 0   → paste as tls.crt value
+#   cat tls.key | base64 -w 0   → paste as tls.key value
+#
+# Or use kubectl imperative command (does not require base64 encoding):
+#   kubectl create secret tls tls-secret --cert=tls.crt --key=tls.key \
+#     -n networking-demo --dry-run=client -o yaml | kubectl apply -f -
+# ==============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls-secret
+  namespace: networking-demo
+
+  labels:
+    app.kubernetes.io/name: tls-secret
+    app.kubernetes.io/instance: tls-secret
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      TLS certificate and private key for secure.example.com. In production,
+      this Secret should be managed by cert-manager or External Secrets
+      Operator — never committed to git with real key material.
+
+# type must be kubernetes.io/tls for TLS Secrets.
+# This type enforces the presence of tls.crt and tls.key fields.
+type: kubernetes.io/tls
+
+data:
+  # Replace these placeholder values with real base64-encoded certificate data.
+  # The values below are NOT a valid certificate — they are placeholders only.
+  #
+  # tls.crt must be the full certificate chain: leaf cert + intermediate CA(s).
+  # The order matters: leaf first, then intermediates. Do NOT include the root CA.
+  tls.crt: |
+    # PLACEHOLDER — replace with: cat tls.crt | base64 -w 0
+    LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi4uLgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0t
+
+  # tls.key must be the unencrypted private key in PEM format.
+  # If your key is passphrase-protected, decrypt it first:
+  #   openssl rsa -in encrypted.key -out tls.key
+  tls.key: |
+    # PLACEHOLDER — replace with: cat tls.key | base64 -w 0
+    LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCi4uLgotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0t

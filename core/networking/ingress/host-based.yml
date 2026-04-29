@@ -1,0 +1,123 @@
+# ==============================================================================
+# Host-Based Ingress — Multiple Hostnames, Multiple Backend Services
+# ==============================================================================
+# Routes HTTP traffic to different Services based on the HTTP Host header.
+# Each service gets its own subdomain. The Ingress Controller performs
+# name-based virtual hosting (the same mechanism Apache/nginx use for vhosts).
+#
+# Traffic flow:
+#   api.example.com  →  api-service:8080
+#   web.example.com  →  web-service:80
+#
+# DNS requirements:
+#   Both hostnames must resolve to the Ingress Controller's external IP.
+#   In production, use a wildcard A record:
+#     *.example.com  IN  A  <ingress-controller-external-ip>
+#
+# Local testing with minikube or kind:
+#   1. Get the Ingress Controller external IP:
+#        kubectl get svc -n ingress-nginx ingress-nginx-controller
+#   2. Add entries to /etc/hosts (Linux/macOS) or C:\Windows\System32\drivers\etc\hosts:
+#        192.168.49.2  api.example.com web.example.com
+#      Replace 192.168.49.2 with your actual Ingress IP (minikube ip).
+#   3. Test:
+#        curl http://api.example.com/health
+#        curl http://web.example.com/
+#
+# Apply:
+#   kubectl apply -f host-based.yml
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: host-based-ingress
+  namespace: networking-demo
+
+  labels:
+    app.kubernetes.io/name: host-based-ingress
+    app.kubernetes.io/instance: host-based-ingress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Host-based Ingress routing api.example.com to api-service and
+      web.example.com to web-service. Both hostnames must resolve to the
+      Ingress Controller's external IP. For local testing, add entries
+      to /etc/hosts pointing these names to the Ingress Controller IP.
+
+    # proxy-body-size: default 1m; increase for services that accept file uploads.
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # proxy-connect-timeout: time to wait for a connection to the backend.
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+
+    # proxy-read-timeout: time to wait for the backend to return a response.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+spec:
+  # ingressClassName is required since Kubernetes 1.18.
+  # Do not rely on the cluster-default IngressClass — always be explicit.
+  ingressClassName: nginx
+
+  rules:
+    # -------------------------------------------------------------------------
+    # Rule 1: api.example.com → api-service
+    # -------------------------------------------------------------------------
+    - host: api.example.com   # Matches the HTTP Host header exactly.
+                               # Wildcards like *.example.com are NOT supported
+                               # in the host field here — wildcard hosts require
+                               # implementation-specific annotations or the
+                               # Gateway API.
+      http:
+        paths:
+          - path: /            # Match ALL paths under this host.
+            pathType: Prefix   # Prefix on "/" matches every path.
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8080 # The Service port (not the pod/container port).
+
+    # -------------------------------------------------------------------------
+    # Rule 2: web.example.com → web-service
+    # -------------------------------------------------------------------------
+    - host: web.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 80
+
+    # -------------------------------------------------------------------------
+    # Example: Path-based sub-routing on a host (combining both strategies)
+    # You can add multiple paths per host for finer-grained routing.
+    # -------------------------------------------------------------------------
+    # - host: api.example.com
+    #   http:
+    #     paths:
+    #       - path: /v1
+    #         pathType: Prefix
+    #         backend:
+    #           service:
+    #             name: api-v1-service
+    #             port:
+    #               number: 8080
+    #       - path: /v2
+    #         pathType: Prefix
+    #         backend:
+    #           service:
+    #             name: api-v2-service
+    #             port:
+    #               number: 8080
+
+  # TLS is NOT configured in this file (use tls.yml for TLS).
+  # Without TLS, all traffic is plain HTTP. In production, always use TLS.
+  # Without ssl-redirect, an attacker can downgrade HTTPS to HTTP via a
+  # redirect strip attack. See tls.yml for the recommended TLS configuration.
