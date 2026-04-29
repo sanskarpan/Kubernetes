@@ -50,6 +50,7 @@ jobs:
             ! -path './vendor/*' \
             ! -path './.git/*' \
             ! -path './.github/*' \
+            ! -path './helm/*/templates/*' \
           | sort \
           | xargs -r yamllint \
               --strict \
