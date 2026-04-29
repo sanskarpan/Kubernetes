@@ -1,0 +1,186 @@
+# ==============================================================================
+# RESOURCEQUOTA + LIMITRANGE — NAMESPACE PAIR
+# ==============================================================================
+# Apply these two resources together in every namespace.
+# Comment: "Apply these two together in every namespace as a pair"
+#
+# ResourceQuota:  Limits TOTAL resource consumption across all pods/objects
+#                 in the namespace.
+# LimitRange:     Sets DEFAULT and MAXIMUM values per container.
+#                 Also auto-injects defaults for pods that omit resource specs
+#                 (required when ResourceQuota is in effect — quota demands
+#                 resource specs be present; LimitRange provides them).
+#
+# Apply:
+#   kubectl apply -f namespace-quota.yml -n workloads
+#
+# Verify:
+#   kubectl describe quota -n workloads
+#   kubectl describe limitrange -n workloads
+# ==============================================================================
+
+# ==============================================================================
+# DOCUMENT 1: ResourceQuota
+# ==============================================================================
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: namespace-quota
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: namespace-quota
+    app.kubernetes.io/component: resource-management
+    app.kubernetes.io/part-of: platform-governance
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      ResourceQuota for the workloads namespace. Limits total CPU, memory,
+      object counts, and storage consumption to prevent noisy-neighbor issues
+      in a shared cluster. Must be paired with the LimitRange in this file
+      so that pods without explicit resource specs receive defaults.
+spec:
+  hard:
+    # -------------------------------------------------------------------------
+    # Compute quotas — total across all pods in the namespace
+    # -------------------------------------------------------------------------
+
+    # requests.cpu: Total CPU requests across all pods.
+    # Scheduler uses requests to reserve capacity. 4 cores = ~20 pods at 200m each.
+    requests.cpu: "4"
+
+    # requests.memory: Total memory requests across all pods.
+    # 8Gi = 32 pods at 256Mi each, with room for burst.
+    requests.memory: 8Gi
+
+    # limits.memory: Total memory limits across all pods.
+    # Set equal to requests.memory to enforce Guaranteed QoS across the namespace.
+    # Adjust upward if some containers have requests < limits intentionally.
+    limits.memory: 8Gi
+
+    # Note: limits.cpu is intentionally OMITTED at the quota level.
+    # CPU limits cause throttling even on idle nodes. Manage CPU through requests
+    # only (which controls scheduling), not limits.
+
+    # -------------------------------------------------------------------------
+    # Object count quotas — prevent object sprawl and cloud resource exhaustion
+    # -------------------------------------------------------------------------
+
+    # pods: Hard cap on the total number of pods (including pending).
+    # 50 pods with 200m CPU requests would consume 10 cores — well above our CPU quota.
+    # The CPU quota will usually be the binding constraint, but object count is a
+    # useful backstop against pathological Deployments (e.g., replicas: 10000).
+    pods: "50"
+
+    # services: Total Service objects (ClusterIP, NodePort, LoadBalancer)
+    services: "20"
+
+    # services.loadbalancers: LoadBalancer Services consume cloud LB IPs (expensive).
+    # Set to a low number matching your actual need. 0 = disallow entirely.
+    services.loadbalancers: "2"
+
+    # services.nodeports: NodePort Services expose cluster ports externally.
+    # In most production clusters, NodePorts are managed by ingress controllers;
+    # direct NodePorts should be rare or disallowed.
+    services.nodeports: "0"
+
+    # persistentvolumeclaims: Limit PVC count to control storage proliferation.
+    persistentvolumeclaims: "10"
+
+    # requests.storage: Total storage requested across all PVCs.
+    # Applies to all storage classes unless scoped per-class below.
+    requests.storage: 100Gi
+
+    # configmaps: ConfigMaps are stored in etcd. Unlimited creation degrades etcd.
+    count/configmaps: "50"
+
+    # secrets: Limit secret count to reduce etcd pressure and audit surface.
+    count/secrets: "30"
+
+    # replicationcontrollers: Legacy; still worth capping.
+    count/replicationcontrollers: "5"
+
+    # deployments, statefulsets, daemonsets — object count limits for workload types
+    count/deployments.apps: "20"
+    count/statefulsets.apps: "5"
+    count/jobs.batch: "20"
+    count/cronjobs.batch: "10"
+
+---
+# ==============================================================================
+# DOCUMENT 2: LimitRange
+# ==============================================================================
+# LimitRange sets per-container and per-pod defaults and maximums.
+# It serves two purposes:
+#   1. Auto-inject default requests/limits for containers that don't set them
+#      (required when a ResourceQuota is active — quota will reject pods without
+#      resource specs; LimitRange provides those specs automatically)
+#   2. Enforce a maximum so no single container can monopolize the namespace
+#
+# LimitRange is enforced by the LimitRanger admission controller at pod creation.
+# Existing pods are not affected when a LimitRange is created or modified.
+# ==============================================================================
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: namespace-limits
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: namespace-limits
+    app.kubernetes.io/component: resource-management
+    app.kubernetes.io/part-of: platform-governance
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      LimitRange for the workloads namespace. Sets default and maximum resource
+      values per container. Must be applied alongside namespace-quota to ensure
+      pods without explicit resource specs still satisfy ResourceQuota requirements.
+spec:
+  limits:
+    # -------------------------------------------------------------------------
+    # Container limits — applied to each individual container
+    # -------------------------------------------------------------------------
+    - type: Container
+
+      # default: These values are INJECTED into any container that does NOT
+      # specify resources.limits. Prevents containers from having unlimited resource
+      # usage when developers forget to set limits.
+      default:
+        # memory: 256Mi default limit — a reasonable baseline for small services
+        memory: 256Mi
+        # Note: cpu limit is intentionally OMITTED from defaults to avoid
+        # CPU throttling on containers that don't set limits explicitly.
+        # Teams should set CPU requests, not limits.
+
+      # defaultRequest: These values are INJECTED into any container that does NOT
+      # specify resources.requests. Ensures every pod has requests for quota purposes.
+      defaultRequest:
+        cpu: 100m       # 0.1 cores — reasonable minimum for any service
+        memory: 128Mi   # 128Mi request — containers OOM-kill near this; set higher if needed
+
+      # max: No single container can exceed these values, even if the namespace quota
+      # has headroom. Prevents individual containers from monopolizing node resources.
+      max:
+        cpu: "4"        # No container can request more than 4 cores
+        memory: 4Gi     # No container can request more than 4Gi
+
+      # min: No container can request less than these values.
+      # Setting a minimum ensures the scheduler has meaningful data for bin-packing.
+      # Too-low requests lead to misleading utilization metrics.
+      min:
+        cpu: 10m        # 10 millicores minimum — nearly free but prevents omission
+        memory: 16Mi    # 16Mi minimum memory request
+
+    # -------------------------------------------------------------------------
+    # PersistentVolumeClaim limits
+    # Limits the size of any individual PVC. Prevents one team member from
+    # requesting a 100Gi PVC that exhausts the namespace's storage quota alone.
+    # -------------------------------------------------------------------------
+    - type: PersistentVolumeClaim
+      max:
+        storage: 20Gi   # Any single PVC can be at most 20Gi
+      min:
+        storage: 1Gi    # Minimum PVC size (avoids 0Gi or tiny wasteful PVCs)
