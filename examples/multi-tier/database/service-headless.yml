@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: database-headless
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/name: database
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: postgres
+      protocol: TCP
+      name: postgres
+  selector:
+    app.kubernetes.io/name: database
+    app.kubernetes.io/part-of: multi-tier
+  publishNotReadyAddresses: true
