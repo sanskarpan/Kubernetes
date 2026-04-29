@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-canary-demo
+  namespace: canary-demo
+  labels:
+    app.kubernetes.io/name: nginx-canary-demo
+    app.kubernetes.io/instance: nginx-canary-demo
+    app.kubernetes.io/version: "1.24"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Service for canary demo — selects both stable and canary pods via shared app label, distributing traffic ~80/20 by replica ratio"
+spec:
+  type: ClusterIP
+
+  # THE KEY TO KUBERNETES-NATIVE CANARY ROUTING:
+  # This selector matches pods from BOTH the stable and canary deployments.
+  # It selects only on 'app.kubernetes.io/name', which is shared by both.
+  # It does NOT select on 'track' (stable vs canary) or 'version' (v1 vs v2).
+  #
+  # With stable=4 replicas and canary=1 replica, the EndpointSlice will contain
+  # 5 pod IPs. kube-proxy distributes connections across all 5 equally:
+  #   ~80% go to stable pods (4 out of 5)
+  #   ~20% go to the canary pod (1 out of 5)
+  #
+  # This is probabilistic, not deterministic — a given user's requests may all
+  # go to stable or all to canary depending on random load balancing.
+  # For sticky canary (same user always hits canary), use a service mesh.
+  selector:
+    app.kubernetes.io/name: nginx-canary-demo
+    # Deliberately NOT including:
+    # - track: stable/canary   (would exclude one or the other)
+    # - version: v1/v2         (would exclude one or the other)
+    # - app.kubernetes.io/instance (different for stable vs canary)
+
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
