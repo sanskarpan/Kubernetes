@@ -1,0 +1,96 @@
+# ==============================================================================
+# ClusterIP Service — Internal Cluster Communication
+# ==============================================================================
+# ClusterIP is the DEFAULT Service type. It allocates a stable virtual IP
+# (the "ClusterIP") that is reachable ONLY from within the cluster. kube-proxy
+# programs iptables/IPVS rules on every node to DNAT traffic destined for the
+# ClusterIP:port to one of the healthy backing pods.
+#
+# For internal cluster traffic only.
+# Pods reach this service via DNS:
+#   nginx-clusterip.networking-demo.svc.cluster.local
+#
+# Short-form DNS (same namespace): nginx-clusterip
+# Cross-namespace DNS:             nginx-clusterip.networking-demo.svc.cluster.local
+#
+# Test connectivity from inside a pod:
+#   kubectl run debug --image=curlimages/curl --rm -it --restart=Never \
+#     -n networking-demo -- curl -sv http://nginx-clusterip
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-clusterip
+  namespace: networking-demo
+
+  labels:
+    # --- Recommended Kubernetes label standard (app.kubernetes.io/*) ---
+    # These labels are used by tooling (Helm, Lens, kubectl slice) and
+    # allow consistent selection across heterogeneous resources.
+    app.kubernetes.io/name: nginx-clusterip
+    app.kubernetes.io/instance: nginx-clusterip
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      ClusterIP Service exposing nginx pods on port 80 for internal cluster
+      communication only. Accessible via DNS at
+      nginx-clusterip.networking-demo.svc.cluster.local.
+
+spec:
+  # ClusterIP is the default; stating it explicitly makes intent clear.
+  # Other values: NodePort, LoadBalancer, ExternalName, (or omit type entirely)
+  type: ClusterIP
+
+  # selector matches pods whose labels contain ALL of these key-value pairs.
+  # The Endpoints controller continuously watches for pods with these labels
+  # and updates the Endpoints/EndpointSlice object. Only pods in Ready state
+  # (readinessProbe passing) are added to the endpoint list.
+  selector:
+    app.kubernetes.io/name: nginx    # Must match the pod's labels exactly.
+
+  ports:
+    - name: http                     # Naming ports is recommended. It allows
+                                     # Ingress and other resources to reference
+                                     # the port by name instead of number,
+                                     # making port changes less risky.
+      protocol: TCP                  # TCP is default. UDP is supported.
+                                     # SCTP is supported since 1.20 (beta).
+      port: 80                       # The port THIS service listens on.
+                                     # This is what other pods connect to.
+      targetPort: 80                 # The port on the backing POD to forward to.
+                                     # Can also be a named port: targetPort: http
+                                     # Using named ports decouples Service config
+                                     # from the pod's actual port number.
+
+  # sessionAffinity controls whether subsequent requests from the same client
+  # are routed to the same pod.
+  #
+  # None (default): each request is independently load-balanced (round-robin
+  # in iptables mode). Use this for stateless workloads.
+  #
+  # ClientIP: iptables hashes the source IP and pins the client to one pod for
+  # the duration of sessionAffinityConfig.clientIP.timeoutSeconds (default 3h).
+  # Use for stateful apps that cannot externalise session state. Note: this
+  # breaks if a client is behind a NAT (all clients look like the same IP).
+  sessionAffinity: None
+
+  # Optional: only set sessionAffinityConfig if sessionAffinity is ClientIP.
+  # sessionAffinityConfig:
+  #   clientIP:
+  #     timeoutSeconds: 10800        # 3 hours (default and maximum)
+
+  # Optional: publishNotReadyAddresses
+  # If true, pods that are NOT yet Ready are still included in Endpoints.
+  # Normally false. Useful for headless services in StatefulSets where you
+  # want to discover pods during initialisation (e.g., cluster bootstrap).
+  # publishNotReadyAddresses: false
+
+  # Optional: internalTrafficPolicy (Kubernetes 1.21+)
+  # Cluster (default): traffic can be forwarded to pods on any node.
+  # Local:             traffic is only forwarded to pods on the same node as
+  #                    the client pod. Reduces latency but can cause imbalance.
+  # internalTrafficPolicy: Cluster
