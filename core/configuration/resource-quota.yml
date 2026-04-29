@@ -1,0 +1,167 @@
+# ==============================================================================
+# ResourceQuota — Namespace Aggregate Resource Governance
+# ==============================================================================
+# ResourceQuota enforces aggregate resource limits across ALL pods, services,
+# configmaps, secrets, and PVCs in a namespace.
+#
+# DIFFERENCE FROM LIMITRANGE:
+#   LimitRange:    Governs individual container/pod resource declarations.
+#                  "No single container can request more than 2 CPU."
+#   ResourceQuota: Governs the TOTAL aggregate consumption of the namespace.
+#                  "All pods in this namespace combined cannot use more than 8 CPU."
+#
+# USE BOTH TOGETHER:
+#   Without LimitRange, pods with no resource declarations are admitted with
+#   unlimited resources, which causes ResourceQuota to reject new pods once
+#   the namespace quota is hit (because unlimitted pods count as 0 against quota).
+#   With LimitRange defaults, every container gets resource declarations auto-
+#   injected, so ResourceQuota correctly tracks namespace consumption.
+#
+# COUNT LIMITS — WHY THEY MATTER:
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │ count/* limits prevent etcd saturation from runaway controllers or       │
+# │ attackers. Kubernetes stores all object definitions in etcd. An          │
+# │ attacker (or a buggy controller) that creates tens of thousands of       │
+# │ pods, secrets, or configmaps can:                                        │
+# │   1. Saturate etcd storage (etcd has a default 8GiB storage limit)      │
+# │   2. Slow down the API server (etcd watches scale with object count)     │
+# │   3. Degrade the entire cluster for all tenants                         │
+# │                                                                           │
+# │ Count limits cap object creation BEFORE resources are exhausted.         │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Apply:
+#   kubectl apply -f resource-quota.yml
+#   kubectl describe resourcequota workloads-quota -n workloads
+#   # Shows current usage vs. limits for each quota item.
+#
+# Check current namespace usage:
+#   kubectl get resourcequota -n workloads
+# ==============================================================================
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: workloads-quota
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: workloads-quota
+    app.kubernetes.io/instance: workloads-quota
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: resource-governance
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      ResourceQuota for the workloads namespace. Enforces aggregate CPU and
+      memory limits across all pods, and count limits for pods, services,
+      configmaps, secrets, and PVCs. Prevents runaway controllers and etcd
+      saturation. Use together with LimitRange (limitrange.yml) to also enforce
+      per-container resource bounds.
+
+spec:
+  hard:
+    # -------------------------------------------------------------------------
+    # CPU Quota
+    # -------------------------------------------------------------------------
+
+    # requests.cpu: the total CPU requested by all containers across all pods
+    # in this namespace cannot exceed 4 cores. The scheduler uses requests for
+    # placement — if the aggregate requests exceed this, new pods are rejected.
+    requests.cpu: "4"
+
+    # limits.cpu: the total CPU limit across all containers cannot exceed 8 cores.
+    # CPU limits are enforced by the kernel's CFS scheduler (via cgroups).
+    # Setting limits.cpu to 2x requests.cpu allows controlled bursting.
+    limits.cpu: "8"
+
+    # -------------------------------------------------------------------------
+    # Memory Quota
+    # -------------------------------------------------------------------------
+
+    # requests.memory: total memory requested across all pods cannot exceed 8Gi.
+    requests.memory: "8Gi"
+
+    # limits.memory: total memory limits across all pods cannot exceed 16Gi.
+    # Memory over-limit results in OOMKill — set limits conservatively for
+    # memory-sensitive workloads. For latency-sensitive production workloads,
+    # consider setting requests == limits (Guaranteed QoS).
+    limits.memory: "16Gi"
+
+    # -------------------------------------------------------------------------
+    # Pod Count
+    # -------------------------------------------------------------------------
+
+    # count/pods: maximum number of pods in this namespace.
+    # This prevents:
+    # - Autoscalers from creating unbounded pod counts during traffic spikes.
+    # - Buggy controllers (e.g., CronJob with concurrencyPolicy: Allow)
+    #   from spawning thousands of pods.
+    # - Attackers who have gained pod-create permission from filling the cluster.
+    # 50 pods is a reasonable limit for most workload namespaces. Increase for
+    # large-scale microservices or autoscaled workloads.
+    count/pods: "50"
+
+    # -------------------------------------------------------------------------
+    # Service Count
+    # -------------------------------------------------------------------------
+
+    # count/services: maximum number of Services in this namespace.
+    # Prevents accidental or malicious creation of excessive NodePort or
+    # LoadBalancer services (each LoadBalancer costs money in cloud environments).
+    count/services: "20"
+
+    # count/services.loadbalancers: specifically limit the number of
+    # LoadBalancer-type Services, since each provisions a cloud load balancer.
+    # count/services.loadbalancers: "5"
+
+    # count/services.nodeports: limit NodePort services separately.
+    # count/services.nodeports: "10"
+
+    # -------------------------------------------------------------------------
+    # ConfigMap Count
+    # -------------------------------------------------------------------------
+
+    # count/configmaps: prevents runaway ConfigMap creation.
+    # Kubernetes stores all ConfigMaps in etcd. Thousands of ConfigMaps
+    # (e.g., from a Helm release that creates one per feature flag) can
+    # degrade etcd performance and API server response times.
+    count/configmaps: "50"
+
+    # -------------------------------------------------------------------------
+    # Secret Count
+    # -------------------------------------------------------------------------
+
+    # count/secrets: Secrets are stored in etcd and each is encrypted (if at-rest
+    # encryption is configured). Excessive secrets slow etcd and the encryption
+    # key rotation process. This limit also caps the blast radius of a compromised
+    # service account with 'create secrets' permission.
+    count/secrets: "30"
+
+    # -------------------------------------------------------------------------
+    # PersistentVolumeClaim Count
+    # -------------------------------------------------------------------------
+
+    # count/persistentvolumeclaims: prevents namespace from exhausting available
+    # PVs or triggering excessive cloud volume provisioning. Each PVC in a cloud
+    # environment may provision a separate block device (EBS, GCP PD, Azure Disk).
+    count/persistentvolumeclaims: "20"
+
+    # requests.storage: total storage requested by all PVCs in this namespace.
+    # Prevents a single namespace from monopolizing cluster storage capacity.
+    requests.storage: "100Gi"
+
+    # -------------------------------------------------------------------------
+    # Scoped Quotas (Advanced)
+    # -------------------------------------------------------------------------
+    # ResourceQuotas can be scoped to specific pod priority classes or
+    # termination states. This allows different quotas for different QoS classes.
+    #
+    # Example: quota only counts pods in the BestEffort QoS class:
+    # scopes:
+    #   - BestEffort
+    #
+    # Or quota only counts non-terminating pods (excludes completed/failed jobs):
+    # scopes:
+    #   - NotTerminating

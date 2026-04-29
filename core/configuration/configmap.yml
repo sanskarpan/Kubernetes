@@ -1,0 +1,187 @@
+# ==============================================================================
+# ConfigMap — Application Configuration
+# ==============================================================================
+# ConfigMaps store non-sensitive configuration data as key-value pairs.
+# This example demonstrates the three common data patterns:
+#   1. Simple string key-value pairs (used as environment variables)
+#   2. Numeric values stored as strings (important — see YAML type hazard note)
+#   3. Multi-line files (nginx.conf, properties files, scripts)
+#
+# HOW TO REFERENCE IN PODS:
+#
+# As environment variables (individual keys):
+#   env:
+#     - name: LOG_LEVEL
+#       valueFrom:
+#         configMapKeyRef:
+#           name: app-config
+#           key: LOG_LEVEL
+#
+# As environment variables (all keys at once):
+#   envFrom:
+#     - configMapRef:
+#         name: app-config
+#
+# As a volume mount (each key becomes a file):
+#   volumes:
+#     - name: config
+#       configMap:
+#         name: app-config
+#   containers:
+#     - volumeMounts:
+#         - name: config
+#           mountPath: /etc/config
+#           readOnly: true
+#   # Result: /etc/config/LOG_LEVEL, /etc/config/nginx.conf, etc.
+#
+# LIVE UPDATES:
+#   When a ConfigMap is updated (kubectl apply or kubectl edit), volume-mounted
+#   files are updated automatically by kubelet within ~60 seconds (the sync period).
+#   Environment variables injected at pod startup are NOT updated — the pod
+#   must be restarted to pick up changes.
+#
+# Apply:
+#   kubectl apply -f configmap.yml
+#   kubectl describe configmap app-config -n workloads
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: app-config
+    app.kubernetes.io/instance: app-config
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: configuration
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Application configuration ConfigMap for the workloads namespace.
+      Contains logging level, database connection settings, connection pool
+      size, and a full nginx.conf. Referenced by pods as environment variables
+      or volume-mounted files.
+
+data:
+  # ---------------------------------------------------------------------------
+  # Simple string values — used as environment variables or single-line files.
+  # ---------------------------------------------------------------------------
+
+  # Log verbosity level. Valid values: debug, info, warn, error.
+  LOG_LEVEL: "info"
+
+  # Internal cluster DNS name for the MySQL service.
+  # Format: <service-name>.<namespace>.svc.cluster.local
+  # Using the FQDN (not just "mysql") avoids DNS search path ambiguity
+  # and works correctly from any namespace in the cluster.
+  DATABASE_HOST: "mysql.database.svc.cluster.local"
+
+  # Database port as a string.
+  DATABASE_PORT: "3306"
+
+  # ---------------------------------------------------------------------------
+  # YAML TYPE HAZARD — Numbers Must Be Quoted
+  # ---------------------------------------------------------------------------
+  # YAML automatically parses unquoted values as their native types:
+  #   MAX_CONNECTIONS: 50    → parsed as integer 50 (not string "50")
+  #   ENABLED: true          → parsed as boolean true (not string "true")
+  #   VERSION: 1.0           → parsed as float 1.0 (not string "1.0")
+  #
+  # Kubernetes ConfigMap values MUST be strings. If YAML parses a value as
+  # an integer or boolean, the kubectl validation will reject it with:
+  #   "cannot unmarshal !!int into string"
+  #
+  # ALWAYS quote numeric values in ConfigMaps:
+  MAX_CONNECTIONS: "50"      # Correct: quoted string "50", not integer 50.
+  REQUEST_TIMEOUT_MS: "5000" # Correct: quoted string, not integer.
+  ENABLE_METRICS: "true"     # Correct: quoted string, not boolean true.
+  # ---------------------------------------------------------------------------
+
+  # Application environment tag (used for logging, tracing, etc.)
+  APP_ENV: "production"
+
+  # Feature flag configuration (simple string format)
+  FEATURE_FLAGS: "new-dashboard=true,beta-api=false,dark-mode=true"
+
+  # ---------------------------------------------------------------------------
+  # Multi-line file value — using the | literal block scalar.
+  # ---------------------------------------------------------------------------
+  # The | (pipe) character in YAML preserves newlines exactly as written.
+  # Each subsequent indented line becomes a line in the file.
+  # This creates a key "nginx.conf" whose value is the entire nginx config.
+  #
+  # When mounted as a volume:
+  #   mountPath: /etc/nginx/conf.d
+  # The file /etc/nginx/conf.d/nginx.conf will contain exactly this content.
+  #
+  # Using | instead of > (folded): | preserves newlines (correct for config files).
+  # > would collapse newlines into spaces, breaking multi-line configs.
+  nginx.conf: |
+    # nginx configuration managed by ConfigMap app-config.
+    # Do not edit this file directly on the container — changes will be overwritten.
+    # Update the ConfigMap and allow kubelet to sync the volume mount (~60s).
+
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+
+    events {
+      worker_connections 1024;
+    }
+
+    http {
+      include       /etc/nginx/mime.types;
+      default_type  application/octet-stream;
+
+      # Log format includes request ID for distributed tracing.
+      log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for" '
+                      'req_id=$http_x_request_id';
+
+      access_log  /var/log/nginx/access.log  main;
+      sendfile        on;
+      tcp_nopush      on;
+      keepalive_timeout 65;
+      server_tokens   off;   # Do not expose nginx version in response headers.
+
+      # Gzip compression for text responses.
+      gzip on;
+      gzip_types text/plain application/json application/javascript text/css;
+
+      server {
+        listen 8080;           # Non-privileged port; no root required.
+        server_name _;
+
+        # Health check endpoint for readinessProbe / livenessProbe.
+        location /healthz {
+          access_log off;      # Don't flood access log with health checks.
+          return 200 "ok\n";
+          add_header Content-Type text/plain;
+        }
+
+        location / {
+          root   /usr/share/nginx/html;
+          index  index.html;
+          try_files $uri $uri/ =404;
+        }
+      }
+    }
+
+  # Application properties file (Java-style)
+  application.properties: |
+    # Database connection pool
+    spring.datasource.url=jdbc:mysql://${DATABASE_HOST}:${DATABASE_PORT}/appdb
+    spring.datasource.hikari.maximum-pool-size=${MAX_CONNECTIONS}
+    spring.datasource.hikari.connection-timeout=5000
+
+    # Logging
+    logging.level.root=${LOG_LEVEL}
+    logging.level.com.example=${LOG_LEVEL}
+
+    # Server
+    server.port=8080
+    server.shutdown=graceful
+    spring.lifecycle.timeout-per-shutdown-phase=50s
