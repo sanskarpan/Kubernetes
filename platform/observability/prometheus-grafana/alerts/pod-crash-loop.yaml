@@ -1,0 +1,93 @@
+# ==============================================================================
+# PROMETHEUSRULE — Pod CrashLoopBackOff Alert
+# ==============================================================================
+# Alerts when any container in the cluster has been in CrashLoopBackOff state
+# for more than 5 minutes.
+#
+# A pod in CrashLoopBackOff is restarting repeatedly due to:
+#   - Application errors (non-zero exit code)
+#   - OOMKill (out of memory)
+#   - Failed readiness/liveness probes
+#   - Missing ConfigMap or Secret
+#
+# The `for: 5m` clause prevents alerting on transient startup failures.
+# After 5 minutes of CrashLoopBackOff, investigate immediately.
+#
+# Prerequisites:
+#   - kube-state-metrics installed (part of kube-prometheus-stack)
+#   - Prometheus Operator watching this namespace
+#
+# Apply:
+#   kubectl apply -f pod-crash-loop.yaml
+#
+# Verify the rule is loaded:
+#   kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090
+#   Open: http://localhost:9090/rules → search for "PodCrashLoopBackOff"
+# ==============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pod-crash-loop-alert
+  namespace: monitoring
+  labels:
+    # release: monitoring — must match the Prometheus Operator's ruleSelector label.
+    # kube-prometheus-stack auto-discovers PrometheusRules with this label.
+    release: monitoring
+    app.kubernetes.io/name: pod-crash-loop-alert
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/part-of: monitoring-platform
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      PrometheusRule that alerts on pods stuck in CrashLoopBackOff for more
+      than 5 minutes. Fires a warning-severity alert per affected container.
+spec:
+  groups:
+    - name: pod-alerts
+      # interval: how often this group's rules are evaluated.
+      # Inherits the global evaluationInterval (30s) if not set.
+      interval: 30s
+
+      rules:
+        # -----------------------------------------------------------------------
+        # Alert: PodCrashLoopBackOff
+        # -----------------------------------------------------------------------
+        - alert: PodCrashLoopBackOff
+
+          # expr: PromQL expression — fires when any container is in CrashLoopBackOff.
+          # kube_pod_container_status_waiting_reason is provided by kube-state-metrics.
+          # The metric value is 1 when the condition is true for a given container.
+          # > 0 allows for metric series that report fractional values (defensive).
+          expr: |
+            kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} > 0
+
+          # for: Alert must be firing for this duration before it transitions
+          # from "pending" to "firing" state in Alertmanager.
+          # 5m prevents noise from pods that recover quickly on restart.
+          for: 5m
+
+          labels:
+            # severity: Used by Alertmanager routing rules to route to the right receiver.
+            # warning → Slack; critical → PagerDuty (configure in Alertmanager values).
+            severity: warning
+
+          annotations:
+            # summary: Short, human-readable alert title.
+            # Template variables: {{ $labels.<label-name> }} from the metric's labels.
+            summary: "Pod {{ $labels.pod }} is in CrashLoopBackOff"
+
+            # description: Detailed context for the on-call engineer.
+            # Includes the namespace, pod name, and container name for fast identification.
+            description: >
+              Container {{ $labels.container }} in pod {{ $labels.pod }}
+              (namespace: {{ $labels.namespace }}) has been in CrashLoopBackOff
+              for more than 5 minutes.
+
+              Investigate:
+                kubectl describe pod {{ $labels.pod }} -n {{ $labels.namespace }}
+                kubectl logs {{ $labels.pod }} -n {{ $labels.namespace }} -c {{ $labels.container }} --previous
+
+            # runbook_url: Link to internal runbook (update with your actual URL)
+            runbook_url: "https://runbooks.example.com/alerts/pod-crash-loop"
