@@ -1,0 +1,128 @@
+# =============================================================================
+# MySQL Helm Chart — Default Values
+# =============================================================================
+# All values here act as defaults and are intended to be overridden by
+# environment-specific values files (-f values-prod.yaml).
+#
+# Every property has a comment explaining its purpose and any production notes.
+# =============================================================================
+
+# Number of MySQL replicas.
+# Production: use 1 for a standalone instance or configure Group Replication.
+replicaCount: 1
+
+image:
+  # Container image repository. Do not include the tag here.
+  repository: mysql
+
+  # Image tag. Overrides Chart.AppVersion when set.
+  # Leave empty to use Chart.AppVersion (8.0.36).
+  tag: ""
+
+  # Image pull policy.
+  # Production: use IfNotPresent with a pinned tag to ensure reproducible deployments.
+  pullPolicy: IfNotPresent
+
+# Image pull secrets for private container registries.
+imagePullSecrets: []
+
+# Override the chart name portion of resource names.
+nameOverride: ""
+
+# Override the full resource name prefix.
+fullnameOverride: ""
+
+# MySQL authentication configuration.
+auth:
+  # Root password. If empty and auth.existingSecret is empty, a random password
+  # is generated and stored in a Secret. Retrieve it with:
+  #   kubectl get secret <release>-mysql -o jsonpath='{.data.mysql-root-password}' | base64 -d
+  rootPassword: ""
+
+  # Default database name to create on first start.
+  database: myapp
+
+  # Application user (non-root) to create.
+  username: appuser
+
+  # Password for the application user. If empty, a random password is generated.
+  password: ""
+
+  # Name of an existing Kubernetes Secret containing MySQL credentials.
+  # If set, rootPassword and password above are ignored.
+  # The Secret must contain keys: mysql-root-password, mysql-password.
+  existingSecret: ""
+
+# Persistent storage configuration for MySQL data.
+storage:
+  # Size of the PersistentVolumeClaim.
+  size: 10Gi
+
+  # StorageClass name. Leave empty to use the cluster default StorageClass.
+  # Production: use a StorageClass with Retain reclaim policy to prevent data loss.
+  storageClassName: ""
+
+  # Access mode for the PVC. MySQL requires ReadWriteOnce (single node write).
+  accessMode: ReadWriteOnce
+
+# Container resource requests and limits.
+# Requests: what the scheduler uses to place the pod.
+# Limits: hard upper bounds; exceeding memory limit = OOMKilled.
+resources:
+  requests:
+    memory: 512Mi
+    cpu: 250m
+  limits:
+    memory: 1Gi
+
+# Service configuration.
+service:
+  # Port the ClusterIP Service exposes.
+  port: 3306
+
+# PodDisruptionBudget — ensures minimum availability during voluntary disruptions.
+pdb:
+  enabled: true
+  # Minimum number of pods that must remain available during a disruption.
+  minAvailable: 1
+
+# ServiceAccount configuration.
+serviceAccount:
+  # Whether to create a dedicated ServiceAccount for this workload.
+  create: true
+
+  # Name of the ServiceAccount. Generated from fullname if empty and create=true.
+  name: ""
+
+# ConfigMap for additional my.cnf configuration.
+configMap:
+  # Extra configuration to append to my.cnf.
+  # Example:
+  #   extraConfig: |
+  #     [mysqld]
+  #     max_connections = 500
+  #     slow_query_log = ON
+  extraConfig: ""
+
+# Pod-level security context.
+podSecurityContext:
+  runAsUser: 999
+  runAsGroup: 999
+  fsGroup: 999
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# Node selector — constrain pods to nodes with specific labels.
+nodeSelector: {}
+
+# Tolerations — allow pods to be scheduled on tainted nodes.
+tolerations: []
+
+# Affinity rules — pod anti-affinity for HA.
+affinity: {}

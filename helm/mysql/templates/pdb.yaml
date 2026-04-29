@@ -1,0 +1,19 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "mysql.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: >-
+      PodDisruptionBudget for the MySQL StatefulSet. Ensures at least
+      {{ .Values.pdb.minAvailable }} pod(s) remain available during voluntary
+      disruptions such as node drains or cluster upgrades.
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "mysql.selectorLabels" . | nindent 6 }}
+{{- end }}

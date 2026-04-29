@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "MySQL Helm Chart Values",
+  "description": "JSON Schema for validating the MySQL Helm chart values.yaml.",
+  "type": "object",
+  "required": ["replicaCount", "image", "auth", "storage", "service"],
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "description": "Number of MySQL pod replicas."
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository", "pullPolicy"],
+      "additionalProperties": true,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Container image repository."
+        },
+        "tag": {
+          "type": "string",
+          "description": "Image tag. Defaults to Chart.AppVersion when empty."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"],
+          "description": "Image pull policy."
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "rootPassword": {
+          "type": "string",
+          "description": "MySQL root password. Auto-generated if empty."
+        },
+        "database": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Default database name to create."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Application database user."
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for the application user. Auto-generated if empty."
+        },
+        "existingSecret": {
+          "type": "string",
+          "description": "Existing Secret name with MySQL credentials."
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "required": ["size", "accessMode"],
+      "additionalProperties": true,
+      "properties": {
+        "size": {
+          "type": "string",
+          "description": "PVC size (e.g., 10Gi)."
+        },
+        "storageClassName": {
+          "type": "string",
+          "description": "StorageClass name. Empty uses cluster default."
+        },
+        "accessMode": {
+          "type": "string",
+          "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany"],
+          "description": "PVC access mode."
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["port"],
+      "additionalProperties": true,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "MySQL service port."
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        }
+      }
+    },
+    "pdb": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "pattern": "^[0-9]+%$" }
+          ]
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" }
+      }
+    },
+    "configMap": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "extraConfig": {
+          "type": "string",
+          "description": "Extra content appended to my.cnf."
+        }
+      }
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "securityContext": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "imagePullSecrets": { "type": "array" }
+  }
+}

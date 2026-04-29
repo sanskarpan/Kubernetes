@@ -1,0 +1,100 @@
+# =============================================================================
+# Velero Backup Schedule — Daily backups of StatefulSet namespaces
+# =============================================================================
+# This Schedule creates a Backup every day at 02:00 UTC.
+# It targets namespaces that contain StatefulSet workloads (databases, etc.)
+#
+# Prerequisites:
+#   - Velero CLI and server installed (see README.md)
+#   - A BackupStorageLocation (BSL) configured
+#   - Volume snapshot provider configured (for PVC backups)
+# =============================================================================
+
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-statefulset-backup
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup-schedule
+    backup.velero.io/schedule: daily
+spec:
+  # Cron expression: At 02:00 UTC every day.
+  # Format: minute hour day-of-month month day-of-week
+  schedule: "0 2 * * *"
+
+  # Template for each Backup resource created by this Schedule.
+  template:
+    # Namespaces to include in the backup.
+    # Add all namespaces that contain StatefulSet workloads (databases, etc.).
+    includedNamespaces:
+      - data
+      - multi-tier
+      - default
+
+    # Optionally exclude specific namespaces (e.g., monitoring, ingress-nginx).
+    excludedNamespaces:
+      - kube-system
+      - kube-public
+      - kube-node-lease
+      - cert-manager
+      - monitoring
+      - ingress-nginx
+
+    # Include all resource types in the backup.
+    includedResources:
+      - "*"
+
+    # Include cluster-scoped resources referenced by namespaced resources.
+    includeClusterResources: true
+
+    # Create volume snapshots for PersistentVolumes.
+    # Requires a compatible volume snapshot provider.
+    snapshotVolumes: true
+
+    # How long to retain the backup. After this, Velero deletes the backup
+    # from object storage automatically.
+    ttl: 720h0m0s
+
+    # StorageLocation — references the BackupStorageLocation configured during install.
+    # Leave empty to use the default BSL.
+    storageLocation: default
+
+    # VolumeSnapshotLocations — references the VolumeSnapshotLocation(s) to use.
+    volumeSnapshotLocations:
+      - default
+
+    # Labels applied to all Backup resources created by this Schedule.
+    labels:
+      schedule: daily-statefulset-backup
+      managed-by: velero
+
+    # Hooks — run commands inside pods before/after backup for consistency.
+    # Example: freeze MySQL before backup, thaw after.
+    hooks:
+      resources:
+        - name: mysql-freeze
+          includedNamespaces:
+            - data
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: mysql
+          pre:
+            - exec:
+                container: mysql
+                command:
+                  - /bin/bash
+                  - -c
+                  - mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "FLUSH TABLES WITH READ LOCK;"
+                onError: Fail
+                timeout: 30s
+          post:
+            - exec:
+                container: mysql
+                command:
+                  - /bin/bash
+                  - -c
+                  - mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "UNLOCK TABLES;"
+                onError: Continue
+                timeout: 30s

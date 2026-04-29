@@ -1,0 +1,70 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "apache.fullname" . }}-smoke-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apache.labels" . | nindent 4 }}
+  annotations:
+    # Run this Job after install and upgrade hooks complete.
+    "helm.sh/hook": post-install,post-upgrade
+    # Delete the Job before creating a new one (on re-install/upgrade),
+    # and also delete it once it succeeds.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    # Weight controls execution order relative to other hooks (lower = earlier).
+    "helm.sh/hook-weight": "5"
+    kubernetes.io/description: >-
+      Post-install smoke test Job. Verifies the Apache service is responding
+      with an HTTP 200 after the chart is installed or upgraded.
+spec:
+  # Retry the Job once on failure before marking it as failed.
+  backoffLimit: 1
+  # Clean up the Job 120 seconds after it completes (pass or fail).
+  ttlSecondsAfterFinished: 120
+  template:
+    metadata:
+      labels:
+        {{- include "apache.selectorLabels" . | nindent 8 }}
+    spec:
+      # The Job pod must not be restarted automatically — it will be retried
+      # by the Job controller up to backoffLimit times instead.
+      restartPolicy: Never
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534   # nobody
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: smoke-test
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # wget --spider fetches the URL and checks the HTTP status code.
+          # Exit code 1 on any non-2xx response → Job fails → helm install fails.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== Apache smoke test starting ==="
+              echo "Target: http://{{ include "apache.fullname" . }}:{{ .Values.service.port }}/"
+              wget \
+                --spider \
+                --server-response \
+                --tries=5 \
+                --timeout=10 \
+                --waitretry=5 \
+                "http://{{ include "apache.fullname" . }}:{{ .Values.service.port }}/" \
+              && echo "=== Smoke test PASSED ===" \
+              || { echo "=== Smoke test FAILED ==="; exit 1; }
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 16Mi

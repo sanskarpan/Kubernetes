@@ -1,0 +1,108 @@
+suite: apache deployment tests
+templates:
+  - deployment.yaml
+  - hpa.yaml
+tests:
+  - it: should have correct replica count when autoscaling is disabled
+    set:
+      autoscaling.enabled: false
+      replicaCount: 2
+    asserts:
+      - isKind:
+          of: Deployment
+        template: deployment.yaml
+      - equal:
+          path: spec.replicas
+          value: 2
+        template: deployment.yaml
+
+  - it: should not set replicas when autoscaling is enabled
+    set:
+      autoscaling.enabled: true
+      autoscaling.minReplicas: 2
+      autoscaling.maxReplicas: 10
+    asserts:
+      - notExists:
+          path: spec.replicas
+        template: deployment.yaml
+
+  - it: should use the correct image
+    set:
+      image.repository: httpd
+      image.tag: "2.4"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: httpd:2.4
+        template: deployment.yaml
+
+  - it: should have app.kubernetes.io/name label
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: apache
+        template: deployment.yaml
+
+  - it: should have correct selector labels
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: apache
+        template: deployment.yaml
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+        template: deployment.yaml
+
+  - it: should render HPA when autoscaling is enabled
+    set:
+      autoscaling.enabled: true
+      autoscaling.minReplicas: 2
+      autoscaling.maxReplicas: 10
+      autoscaling.targetCPUUtilizationPercentage: 70
+    asserts:
+      - isKind:
+          of: HorizontalPodAutoscaler
+        template: hpa.yaml
+      - equal:
+          path: spec.minReplicas
+          value: 2
+        template: hpa.yaml
+      - equal:
+          path: spec.maxReplicas
+          value: 10
+        template: hpa.yaml
+
+  - it: should not render HPA when autoscaling is disabled
+    set:
+      autoscaling.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: hpa.yaml
+
+  - it: should set imagePullPolicy
+    set:
+      image.pullPolicy: Always
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: Always
+        template: deployment.yaml
+
+  - it: should set serviceAccountName
+    set:
+      serviceAccount.create: true
+      serviceAccount.name: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-apache
+        template: deployment.yaml
+
+  - it: should have managed-by Helm label
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm
+        template: deployment.yaml
