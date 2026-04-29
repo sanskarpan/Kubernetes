@@ -4,7 +4,7 @@ metadata:
   name: {{ include "node-app.fullname" . }}-test-connection
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "node-app.labels" . | nindent 4 }}
+    {{- include "node-app.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: test
   annotations:
     kubernetes.io/description: "Helm test pod — verifies HTTP connectivity to the Node.js service."

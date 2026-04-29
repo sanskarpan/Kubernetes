@@ -4,7 +4,7 @@ metadata:
   name: {{ include "apache.fullname" . }}-test-connection
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "apache.labels" . | nindent 4 }}
+    {{- include "apache.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: test
   annotations:
     kubernetes.io/description: "Helm test pod — verifies HTTP connectivity to the Apache service."

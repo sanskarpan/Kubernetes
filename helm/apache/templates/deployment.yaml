@@ -42,9 +42,7 @@ spec:
   template:
     metadata:
       labels:
-        # Selector labels must be present on the pod template.
-        {{- include "apache.selectorLabels" . | nindent 8 }}
-        # Full label set (includes version, component, etc.) for observability.
+        # Full label set — superset of selectorLabels, so selector is satisfied.
         {{- include "apache.labels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
