@@ -1,0 +1,31 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "apache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apache.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: >-
+      PodDisruptionBudget for the Apache deployment. Ensures at least
+      {{ .Values.podDisruptionBudget.minAvailable }} pod(s) remain available
+      during voluntary disruptions such as node drains or cluster upgrades.
+spec:
+  # minAvailable: the minimum number of pods that must remain available during
+  # a voluntary disruption. Accepts an integer or a percentage string (e.g., "50%").
+  #
+  # With replicaCount: 2 and minAvailable: 1:
+  #   - 1 pod can be disrupted at a time (e.g., during a node drain)
+  #   - Rolling deploys proceed normally
+  #   - The cluster upgrade controller cannot drain a second node until the
+  #     first disrupted pod is rescheduled and Ready on another node.
+  #
+  # Alternatively, use maxUnavailable for percentage-based budgets:
+  #   maxUnavailable: 1  (at most 1 pod down at a time)
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+
+  selector:
+    matchLabels:
+      {{- include "apache.selectorLabels" . | nindent 6 }}
+{{- end }}
