@@ -1,0 +1,157 @@
+# helmfile.yaml — multi-chart stack deployment
+# Install: brew install helmfile
+# Usage: helmfile sync, helmfile diff, helmfile apply
+#
+# Overview:
+#   This Helmfile manages the full kube-platform stack across multiple
+#   environments (dev, staging, prod). It deploys:
+#     - apache     : Apache HTTP Server (web tier)
+#     - node-app   : Node.js API server (api tier)
+#     - mysql      : MySQL database (data tier)
+#     - prometheus  : kube-prometheus-stack (monitoring)
+#
+# Getting started:
+#   1. Install helmfile: brew install helmfile
+#   2. Install helm plugins: helm plugin install https://github.com/databus23/helm-diff
+#   3. Preview changes:  helmfile diff
+#   4. Apply changes:    helmfile apply
+#   5. Sync all:         helmfile sync
+#   6. Destroy all:      helmfile destroy
+
+# =============================================================================
+# Helm defaults applied to all releases unless overridden.
+# =============================================================================
+helmDefaults:
+  # Wait for all resources to be ready before marking a release as successful.
+  wait: true
+  # Timeout for each release operation (install/upgrade).
+  timeout: 600
+  # Clean up resources if the install/upgrade fails (prevents partial deployments).
+  cleanupOnFail: true
+  # Perform a 3-way strategic merge patch during upgrades (like kubectl apply).
+  force: false
+  # Atomic: roll back automatically on failure.
+  atomic: true
+  # Create the namespace if it does not exist.
+  createNamespace: true
+
+# =============================================================================
+# Helm chart repositories.
+# =============================================================================
+repositories:
+  - name: stable
+    url: https://charts.helm.sh/stable
+  - name: bitnami
+    url: https://charts.bitnami.com/bitnami
+  - name: prometheus-community
+    url: https://prometheus-community.github.io/helm-charts
+
+# =============================================================================
+# Environments — each maps to a different set of overrides.
+# =============================================================================
+environments:
+  dev:
+    values:
+      - environment: dev
+      - replicaCount: 1
+      - resourcesEnabled: false
+  staging:
+    values:
+      - environment: staging
+      - replicaCount: 2
+      - resourcesEnabled: true
+  prod:
+    values:
+      - environment: prod
+      - replicaCount: 3
+      - resourcesEnabled: true
+
+# =============================================================================
+# Releases — one entry per Helm chart deployment.
+# =============================================================================
+releases:
+  # ---------------------------------------------------------------------------
+  # Apache HTTP Server — web tier
+  # ---------------------------------------------------------------------------
+  - name: apache
+    namespace: web
+    chart: ./helm/apache
+    version: ~0.2.0
+    values:
+      - helm/apache/values.yaml
+      # Environment-specific overrides (file is optional; helmfile ignores missing files).
+      - "helm/apache/values-{{ .Environment.Name }}.yaml"
+    set:
+      - name: replicaCount
+        value: {{ .Values | get "replicaCount" 1 }}
+    labels:
+      tier: web
+      app: apache
+
+  # ---------------------------------------------------------------------------
+  # Node.js API Server — api tier
+  # ---------------------------------------------------------------------------
+  - name: node-app
+    namespace: api
+    chart: ./helm/node-app
+    version: ~0.1.0
+    values:
+      - helm/node-app/values.yaml
+      - "helm/node-app/values-{{ .Environment.Name }}.yaml"
+    set:
+      - name: replicaCount
+        value: {{ .Values | get "replicaCount" 1 }}
+    labels:
+      tier: api
+      app: node-app
+
+  # ---------------------------------------------------------------------------
+  # MySQL Database — data tier
+  # ---------------------------------------------------------------------------
+  - name: mysql
+    namespace: data
+    chart: ./helm/mysql
+    version: ~0.1.0
+    values:
+      - helm/mysql/values.yaml
+      - "helm/mysql/values-{{ .Environment.Name }}.yaml"
+    set:
+      - name: auth.database
+        value: myapp
+      - name: storage.size
+        value: 10Gi
+    secrets:
+      # Encrypted secrets file (requires helm-secrets plugin + sops/age):
+      # helm plugin install https://github.com/jkroepke/helm-secrets
+      # - "secrets/mysql-{{ .Environment.Name }}.yaml"
+    labels:
+      tier: data
+      app: mysql
+
+  # ---------------------------------------------------------------------------
+  # Prometheus / Grafana — monitoring stack
+  # ---------------------------------------------------------------------------
+  - name: prometheus
+    namespace: monitoring
+    chart: prometheus-community/kube-prometheus-stack
+    version: "~65.0.0"
+    values:
+      - grafana:
+          enabled: true
+          adminPassword: "changeme"
+          ingress:
+            enabled: false
+      - prometheus:
+          prometheusSpec:
+            retention: 7d
+            resources:
+              requests:
+                memory: 512Mi
+                cpu: 250m
+              limits:
+                memory: 2Gi
+      - alertmanager:
+          enabled: true
+    labels:
+      tier: monitoring
+      app: prometheus
