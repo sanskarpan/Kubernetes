@@ -26,8 +26,11 @@ secrets.yaml
 secrets.yml
 *-secret.yaml
 *-secret.yml
-# Allow sealed secrets (they are safe to commit)
-!sealed-secrets/*-sealed.yaml
+# Allow educational placeholder files — these contain no real credentials
+# SealedSecrets are encrypted and always safe to commit
+!**/statefulset/mysql-secret.yml
+!**/statefulset/mysql-sealed-secret.yaml
+!**/sealed-secrets/example-sealed-secret.yaml
 
 # ---- Override values (contain environment-specific, potentially sensitive data)
 values-override.yaml
