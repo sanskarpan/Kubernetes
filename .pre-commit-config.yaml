@@ -1,0 +1,48 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+        name: Check YAML syntax
+        args: [--allow-multiple-documents]
+
+      - id: check-json
+        name: Check JSON syntax
+
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+
+      - id: end-of-file-fixer
+        name: Fix end of files
+
+      - id: check-merge-conflict
+        name: Check for merge conflict markers
+
+      - id: detect-private-key
+        name: Detect private keys
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        name: yamllint
+        args:
+          - --strict
+          - -d
+          - |
+            extends: default
+            rules:
+              line-length:
+                max: 160
+                level: warning
+              truthy:
+                allowed-values: ["true", "false"]
+              comments:
+                min-spaces-from-content: 1
+              comments-indentation: disable
+              document-start: disable
+        exclude: |
+          (?x)^(
+            \.github/.*|
+            helm/.*/templates/.*
+          )$

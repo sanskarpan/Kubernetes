@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "main"
+    assignees:
+      - "sanskarpan"
+    labels:
+      - "dependencies"
+      - "ci"
+
+  - package-ecosystem: "docker"
+    directory: "/examples/django-notes-app"
+    schedule:
+      interval: "monthly"
+    target-branch: "main"
+    assignees:
+      - "sanskarpan"
+    labels:
+      - "dependencies"
+      - "docker"
