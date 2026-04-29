@@ -1,0 +1,159 @@
+# ==============================================================================
+# kustomize/base/nginx-deployment.yaml
+# BASE Deployment manifest — environment-agnostic.
+#
+# This is the canonical template that overlays build upon. It intentionally
+# omits environment-specific values:
+#   - NO namespace  (overlays add this via kustomization.yaml namespace field)
+#   - NO resource limits  (overlays patch these via patch-resources.yaml)
+#   - NO image tag pinned  (overlays update the image via images: field)
+#   - Replica count: 1  (overlays patch this upward for staging/prod)
+#
+# Design principles for Kustomize base manifests:
+#   1. The base should be valid and deployable on its own (for local dev).
+#   2. Values that vary per environment go in overlays, not here.
+#   3. Structural changes (adding containers, volumes) go in overlays too.
+#   4. Labels, security contexts, and probes are shared — keep them here.
+#
+# Overlays that use this base:
+#   overlays/dev/      → namespace:dev, 1 replica, nginx:latest, small limits
+#   overlays/staging/  → namespace:staging, 2 replicas, nginx:1.25, medium limits
+#   overlays/prod/     → namespace:prod, 4 replicas, nginx:1.25, large limits
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # Overlays reference this name in patches. Do not change without updating overlays.
+  name: nginx
+
+  # Labels shared across all environments
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: "nginx deployment base manifest — environment values applied by Kustomize overlays"
+
+spec:
+  # Base replica count. Overlays patch this to their target count.
+  # 1 replica is the minimum that makes sense for a base (functional but not HA).
+  replicas: 1
+
+  revisionHistoryLimit: 5
+  minReadySeconds: 10
+  progressDeadlineSeconds: 600
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx
+      app.kubernetes.io/instance: nginx
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx
+        app.kubernetes.io/instance: nginx
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "nginx web server pod"
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      volumes:
+      - name: nginx-tmp
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      - name: nginx-cache
+        emptyDir: {}
+
+      containers:
+      - name: nginx
+        # Image without a tag. Overlays supply the tag via `images:` in their
+        # kustomization.yaml. Using `kustomize edit set image` in CI is idiomatic.
+        # Base uses "latest" as a placeholder; overlays pin to specific tags.
+        image: nginx:1.25-alpine
+
+        ports:
+        - containerPort: 80
+          protocol: TCP
+          name: http
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+
+        # Resource requests are defined in the base (required for scheduling).
+        # Limits are intentionally omitted — overlays add them via patches
+        # because limits vary significantly between dev, staging, and prod.
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          # limits: not set here — added by overlay patches
+
+        volumeMounts:
+        - name: nginx-tmp
+          mountPath: /tmp
+        - name: nginx-run
+          mountPath: /var/run
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+        startupProbe:
+          httpGet:
+            path: /
+            port: 80
+          failureThreshold: 30
+          periodSeconds: 2
+          timeoutSeconds: 3
+
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 3
+
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
+          timeoutSeconds: 3
