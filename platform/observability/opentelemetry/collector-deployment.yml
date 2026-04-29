@@ -1,0 +1,393 @@
+# ==============================================================================
+# OPENTELEMETRY COLLECTOR — Deployment, ConfigMap, Service, RBAC
+# ==============================================================================
+# See README.md in this directory for architecture overview.
+#
+# This file deploys the OpenTelemetry Collector in "Deployment" mode, which is
+# suitable for a central aggregation point. For per-node collection (like a
+# DaemonSet agent), use the OpenTelemetry Operator's DaemonSet mode instead.
+#
+# Apply:
+#   kubectl apply -f collector-deployment.yml
+#
+# Verify:
+#   kubectl get pods -n observability -l app.kubernetes.io/name=otel-collector
+#   kubectl logs -n observability -l app.kubernetes.io/name=otel-collector --tail=50
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/name: observability
+    app.kubernetes.io/instance: observability
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: namespace
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+---
+# ==============================================================================
+# SERVICEACCOUNT — otel-collector
+# ==============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: otel-collector
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: collector
+    app.kubernetes.io/part-of: otel-platform
+    app.kubernetes.io/managed-by: kubectl
+automountServiceAccountToken: false
+
+---
+# ==============================================================================
+# CLUSTERROLE — otel-collector
+# ==============================================================================
+# The collector needs cluster-wide read access to scrape Prometheus metrics
+# from pods and services across all namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: otel-collector
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: otel-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      ClusterRole for the OTel collector to scrape Prometheus metrics and
+      discover pod/service endpoints across all namespaces.
+rules:
+  # Pod discovery — needed for Prometheus service discovery
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  # Node metrics scraping (cadvisor)
+  - apiGroups: [""]
+    resources: ["nodes/metrics", "nodes/stats", "nodes/proxy"]
+    verbs: ["get"]
+  # For k8s_cluster receiver (optional)
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ==============================================================================
+# CLUSTERROLEBINDING — otel-collector
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: otel-collector
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: otel-platform
+    app.kubernetes.io/managed-by: kubectl
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: observability
+
+---
+# ==============================================================================
+# CONFIGMAP — otel-collector-config
+# ==============================================================================
+# The OTel Collector configuration is embedded as YAML in this ConfigMap.
+# The collector reads it from /etc/otelcol/config.yaml (mounted as a volume).
+#
+# PIPELINE OVERVIEW:
+#   Receivers  -->  Processors  -->  Exporters
+#   (ingest)        (transform)      (send)
+#
+#   otlp receiver:       accepts traces/metrics/logs via OTLP gRPC (4317) and HTTP (4318)
+#   prometheus receiver: scrapes its own /metrics endpoint for self-monitoring
+#   batch processor:     groups telemetry into batches before exporting (efficiency)
+#   memory_limiter:      rejects new data when memory is too high (back-pressure)
+#   logging exporter:    prints to stdout (debug only — disable in production)
+#   otlp exporter:       forwards to Jaeger (or any OTLP-compatible backend)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-collector-config
+    app.kubernetes.io/instance: otel-collector-config
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: otel-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      OpenTelemetry Collector pipeline configuration: OTLP receivers on gRPC 4317
+      and HTTP 4318, batch + memory_limiter processors, logging and Jaeger OTLP exporters.
+data:
+  config.yaml: |
+    # ===========================================================================
+    # OpenTelemetry Collector Pipeline Configuration
+    # ===========================================================================
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      # -------------------------------------------------------------------------
+      # OTLP receiver: accepts traces, metrics, and logs from applications
+      # instrumented with OpenTelemetry SDKs (Go, Python, Java, Node.js, etc.)
+      # gRPC port 4317: preferred for high-throughput, low-latency scenarios
+      # HTTP port 4318: easier for debugging (curl-able), used by some SDKs
+      # -------------------------------------------------------------------------
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+            cors:
+              allowed_origins:
+                - "http://*"
+                - "https://*"
+
+      # -------------------------------------------------------------------------
+      # Prometheus receiver: scrapes the collector's own /metrics endpoint
+      # for self-monitoring (pipeline throughput, drop rates, queue sizes).
+      # -------------------------------------------------------------------------
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: otel-collector-self
+              scrape_interval: 30s
+              static_configs:
+                - targets: ["localhost:8888"]
+
+    processors:
+      # -------------------------------------------------------------------------
+      # memory_limiter: prevents out-of-memory crashes by applying back-pressure.
+      # When memory exceeds limit_mib, new data is refused until usage drops.
+      # MUST be the first processor in all pipelines.
+      # -------------------------------------------------------------------------
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400        # refuse new data above 400 MiB RSS
+        spike_limit_mib: 128  # headroom for sudden spikes
+
+      # -------------------------------------------------------------------------
+      # batch: groups telemetry items into batches before exporting.
+      # Reduces the number of export calls and improves throughput.
+      # send_batch_size: export when batch reaches this many items
+      # timeout: export after this duration even if batch is not full
+      # -------------------------------------------------------------------------
+      batch:
+        send_batch_size: 10000
+        timeout: 10s
+
+    exporters:
+      # -------------------------------------------------------------------------
+      # logging: prints telemetry to stdout in a human-readable format.
+      # Use verbosity: detailed for development, normal or basic for production.
+      # DISABLE in production: it increases log volume and CPU overhead.
+      # -------------------------------------------------------------------------
+      logging:
+        verbosity: normal
+        sampling_initial: 5
+        sampling_thereafter: 200
+
+      # -------------------------------------------------------------------------
+      # otlp: forwards traces to a Jaeger backend via OTLP/gRPC.
+      # Jaeger has supported OTLP ingestion since v1.35 (2022).
+      # Replace the endpoint with your Jaeger collector OTLP gRPC address.
+      # -------------------------------------------------------------------------
+      otlp/jaeger:
+        endpoint: jaeger-collector.observability.svc.cluster.local:4317
+        tls:
+          insecure: true   # set to false and provide ca_file in production
+
+    service:
+      extensions: [health_check]
+
+      # Telemetry for the collector itself (exported to Prometheus via /metrics)
+      telemetry:
+        logs:
+          level: info
+        metrics:
+          address: 0.0.0.0:8888
+
+      pipelines:
+        # Traces pipeline: receive via OTLP, batch, forward to Jaeger
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [logging, otlp/jaeger]
+
+        # Metrics pipeline: receive via OTLP and Prometheus scrape, batch, log
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, batch]
+          exporters: [logging]
+
+        # Logs pipeline: receive via OTLP, batch, log to stdout
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [logging]
+
+---
+# ==============================================================================
+# SERVICE — otel-collector
+# ==============================================================================
+# Exposes the OTLP receiver ports so that applications inside the cluster
+# can send telemetry to the collector via the cluster DNS:
+#   otel-collector.observability.svc.cluster.local:4317 (gRPC)
+#   otel-collector.observability.svc.cluster.local:4318 (HTTP)
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: otel-collector
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: collector
+    app.kubernetes.io/part-of: otel-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Service exposing OTel collector OTLP receivers. Applications send telemetry
+      to otel-collector.observability.svc.cluster.local on port 4317 (gRPC) or 4318 (HTTP).
+spec:
+  selector:
+    app.kubernetes.io/name: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: metrics
+      port: 8888
+      targetPort: 8888
+      protocol: TCP
+
+---
+# ==============================================================================
+# DEPLOYMENT — otel-collector
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: otel-collector
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: collector
+    app.kubernetes.io/part-of: otel-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      OpenTelemetry Collector deployment receiving OTLP traces/metrics/logs and
+      forwarding to Jaeger. Runs 2 replicas for HA.
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+        app.kubernetes.io/instance: otel-collector
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: collector
+        app.kubernetes.io/part-of: otel-platform
+        app.kubernetes.io/managed-by: kubectl
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: otel-collector
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          args:
+            - --config=/etc/otelcol/config.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+            - name: metrics
+              containerPort: 8888
+              protocol: TCP
+            - name: health
+              containerPort: 13133
+              protocol: TCP
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+          resources:
+            requests:
+              cpu: 200m
+              memory: 400Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,86 @@
+# ==============================================================================
+# PODDISRUPTIONBUDGET — MySQL StatefulSet
+# ==============================================================================
+# A PodDisruptionBudget (PDB) limits the number of pods that can be voluntarily
+# disrupted at one time. Voluntary disruptions include:
+#   - Node drain during cluster upgrades (kubectl drain)
+#   - Cluster Autoscaler scale-down evictions
+#   - Manual pod deletion
+#
+# INVOLUNTARY disruptions (node hardware failure, OOM kill) are NOT limited by PDBs.
+# For those, use replicas + pod anti-affinity to spread pods across nodes.
+#
+# WHY THIS MATTERS FOR MYSQL:
+#   MySQL in a StatefulSet runs as a primary (mysql-0) and replicas (mysql-1, mysql-2).
+#   During a node drain or upgrade:
+#     - If mysql-0 (primary) and mysql-1 (replica) are both evicted simultaneously,
+#       MySQL loses quorum and writes fail.
+#     - With maxUnavailable: 1, at most one MySQL pod can be disrupted at a time.
+#       The drain waits for each pod to reschedule and become Ready before continuing.
+#
+# MINAVAILABLE vs MAXUNAVAILABLE FOR STATEFULSETS:
+#   Both achieve similar results, but for StatefulSets:
+#
+#   minAvailable: 2  — "at least 2 pods must be available at all times"
+#     More intuitive for StatefulSets: you express the quorum you need.
+#     If replicas = 3 and minAvailable = 2, then maxDisruptible = 1.
+#     Survives scaling down the StatefulSet: if replicas = 2, minAvailable = 2
+#     blocks all voluntary disruptions (safe, but may block upgrades).
+#
+#   maxUnavailable: 1  — "at most 1 pod can be unavailable at a time"
+#     Easier to reason about for operators and Cluster Autoscaler.
+#     If replicas scale from 3 to 1, maxUnavailable: 1 still allows disruption
+#     of the single remaining pod (which might not be what you want).
+#
+#   RECOMMENDATION: For MySQL StatefulSets with 3 replicas, use minAvailable: 2.
+#   This file uses maxUnavailable: 1 to match the requested spec, but the comment
+#   below the spec shows the minAvailable equivalent.
+#
+# INTERACTION WITH CLUSTER AUTOSCALER:
+#   When CA tries to drain a node running mysql-1, it checks this PDB.
+#   If mysql-0 is already being drained (disrupted), CA will NOT evict mysql-1
+#   until mysql-0 is rescheduled and Ready. This prevents split-brain scenarios.
+#
+# Apply:
+#   kubectl apply -f mysql-pdb.yml
+#
+# Verify:
+#   kubectl get pdb -n database mysql-pdb
+#   kubectl describe pdb -n database mysql-pdb
+#
+# Test (simulate a drain):
+#   kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data --dry-run
+# ==============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mysql-pdb
+  namespace: database
+  labels:
+    app.kubernetes.io/name: mysql-pdb
+    app.kubernetes.io/instance: mysql-pdb
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      PodDisruptionBudget for the MySQL StatefulSet. Limits voluntary disruptions
+      (node drain, CA scale-down) to 1 pod at a time, preventing simultaneous
+      eviction of multiple MySQL pods during cluster maintenance.
+spec:
+  # maxUnavailable: 1 — during voluntary disruptions, at most 1 MySQL pod can be
+  # unavailable (being evicted/rescheduled) at any given time.
+  # With 3 replicas (mysql-0, mysql-1, mysql-2), this means 2 pods must always
+  # be Running and Ready before another can be disrupted.
+  #
+  # ALTERNATIVE using minAvailable (recommended for StatefulSets):
+  #   minAvailable: 2  # More intuitive: always keep at least 2 pods available
+  maxUnavailable: 1
+
+  # Selector must match the labels on the MySQL pods defined in the StatefulSet's
+  # spec.template.metadata.labels. See mysql-statefulset.yml.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql
+      app.kubernetes.io/component: database

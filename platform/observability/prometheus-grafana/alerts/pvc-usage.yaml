@@ -1,0 +1,158 @@
+# ==============================================================================
+# PROMETHEUSRULE — PVC Usage Alerts
+# ==============================================================================
+# Two alerts for PersistentVolumeClaim disk usage:
+#
+# 1. PVCUsageHigh (warning) — fires when a PVC is more than 80% full for 5 minutes.
+#    At 80%, the application still has headroom, but the team should investigate
+#    before reaching critical levels. Many storage backends slow down at high usage.
+#
+# 2. PVCAlmostFull (critical) — fires when a PVC is more than 90% full for 2 minutes.
+#    At 90%+, the application may start failing writes (databases, logs, queues).
+#    This is an urgent alert requiring immediate action.
+#
+# WHY BOTH THRESHOLDS?
+#   - 80% (warning): provides early warning with time to act (expand PVC, add storage,
+#     clean up old data). Most storage expansions require some lead time.
+#   - 90% (critical): urgent — many file systems and databases fail at 95-100%.
+#     PostgreSQL stops writing WAL logs; Elasticsearch becomes read-only.
+#     The 2-minute 'for' period catches genuine saturation quickly.
+#
+# METRICS USED:
+#   kubelet_volume_stats_used_bytes: bytes used in the volume (reported by kubelet)
+#   kubelet_volume_stats_capacity_bytes: total volume capacity in bytes
+#   These metrics are emitted by the kubelet for each mounted PVC.
+#
+# PREREQUISITES:
+#   - kube-prometheus-stack (or Prometheus Operator + kubelet scraping) installed
+#   - PVC must be mounted by a running pod for kubelet to emit volume stats
+#     (unmounted PVCs do not appear in these metrics)
+#
+# Apply:
+#   kubectl apply -f pvc-usage.yaml
+# ==============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pvc-usage-alert
+  namespace: monitoring
+  labels:
+    release: monitoring
+    app.kubernetes.io/name: pvc-usage-alert
+    app.kubernetes.io/instance: pvc-usage-alert
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/part-of: monitoring-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      PrometheusRule with two PVC disk usage alerts: PVCUsageHigh fires at
+      80% usage for 5m (warning), PVCAlmostFull fires at 90% for 2m (critical).
+spec:
+  groups:
+    - name: pvc-usage-alerts
+      interval: 30s
+
+      rules:
+        # -----------------------------------------------------------------------
+        # Alert 1: PVCUsageHigh — WARNING
+        # -----------------------------------------------------------------------
+        # Fires when a PVC has been more than 80% full for 5 consecutive minutes.
+        # The 5-minute window filters out transient spikes (e.g., a large upload
+        # that is immediately followed by a deletion).
+        #
+        # Formula:
+        #   used_bytes / capacity_bytes * 100 > 80
+        #
+        # Labels from the metric include: namespace, persistentvolumeclaim, pod
+        # These are used in the alert annotations to identify the affected resource.
+        # -----------------------------------------------------------------------
+        - alert: PVCUsageHigh
+
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes{job="kubelet"}
+              /
+              kubelet_volume_stats_capacity_bytes{job="kubelet"}
+            ) * 100 > 80
+
+          # 5 minutes: enough time to confirm sustained high usage, not a burst.
+          for: 5m
+
+          labels:
+            severity: warning
+
+          annotations:
+            summary: >
+              PVC {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is over 80% full
+
+            description: >
+              PersistentVolumeClaim {{ $labels.persistentvolumeclaim }}
+              (namespace: {{ $labels.namespace }}, pod: {{ $labels.pod }})
+              is {{ $value | printf "%.1f" }}% full.
+
+              At 80% usage there is still time to act before writes fail.
+              Recommended actions:
+                1. Check what is consuming disk space:
+                   kubectl exec -n {{ $labels.namespace }} {{ $labels.pod }} -- df -h
+                2. Identify large files or old logs:
+                   kubectl exec -n {{ $labels.namespace }} {{ $labels.pod }} -- du -sh /*
+                3. Expand the PVC (if the StorageClass supports expansion):
+                   kubectl patch pvc {{ $labels.persistentvolumeclaim }} \
+                     -n {{ $labels.namespace }} \
+                     -p '{"spec":{"resources":{"requests":{"storage":"20Gi"}}}}'
+                4. If the workload generates logs, consider log rotation or shipping logs externally.
+
+            runbook_url: "https://runbooks.example.com/alerts/pvc-usage-high"
+
+        # -----------------------------------------------------------------------
+        # Alert 2: PVCAlmostFull — CRITICAL
+        # -----------------------------------------------------------------------
+        # Fires when a PVC has been more than 90% full for 2 consecutive minutes.
+        # At 90%+, many applications start failing:
+        #   - PostgreSQL: cannot write WAL segments, crashes with "no space left"
+        #   - Elasticsearch: switches to read-only mode automatically
+        #   - Kafka: stops writing new records to disk
+        #   - Log collectors: drop log entries, causing data loss
+        #
+        # The 2-minute 'for' window is shorter than PVCUsageHigh because we need
+        # to alert quickly — time to react is very limited at 90%.
+        # -----------------------------------------------------------------------
+        - alert: PVCAlmostFull
+
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes{job="kubelet"}
+              /
+              kubelet_volume_stats_capacity_bytes{job="kubelet"}
+            ) * 100 > 90
+
+          # 2 minutes: shorter window because 90%+ requires urgent action.
+          for: 2m
+
+          labels:
+            severity: critical
+
+          annotations:
+            summary: >
+              PVC {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is almost full (> 90%)
+
+            description: >
+              PersistentVolumeClaim {{ $labels.persistentvolumeclaim }}
+              (namespace: {{ $labels.namespace }}, pod: {{ $labels.pod }})
+              is {{ $value | printf "%.1f" }}% full — CRITICAL.
+
+              The application may be failing writes RIGHT NOW. Immediate action required:
+                1. Free space immediately:
+                   kubectl exec -n {{ $labels.namespace }} {{ $labels.pod }} -- \
+                     find /data -name "*.log" -mtime +7 -delete
+                2. Expand the PVC:
+                   kubectl patch pvc {{ $labels.persistentvolumeclaim }} \
+                     -n {{ $labels.namespace }} \
+                     -p '{"spec":{"resources":{"requests":{"storage":"50Gi"}}}}'
+                3. If PVC expansion is not supported, provision a new larger PVC
+                   and migrate data. See storage README for migration procedures.
+                4. Check application logs for write errors:
+                   kubectl logs -n {{ $labels.namespace }} {{ $labels.pod }} --tail=100
+
+            runbook_url: "https://runbooks.example.com/alerts/pvc-almost-full"

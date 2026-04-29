@@ -1,0 +1,38 @@
+{
+  "_comment": "Custom seccomp profile: deny-setuid",
+  "_description": "Allows all syscalls except setuid/setgid and related privilege-escalation syscalls. Place this file on each node at /var/lib/kubelet/seccomp/profiles/deny-setuid.json",
+  "_use_case": "Prevents any process inside the container from changing its UID/GID even if the binary has the setuid bit set on the filesystem. Combined with readOnlyRootFilesystem and capabilities.drop=[ALL], this closes a common privilege escalation vector.",
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "syscalls": [
+    {
+      "_comment": "Deny setuid: prevents a process from switching to root (UID 0) or any other UID",
+      "names": ["setuid", "setuid32"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Deny setgid: prevents a process from switching to a privileged GID",
+      "names": ["setgid", "setgid32"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Deny setresuid/setresgid: the 'real, effective, saved' UID/GID variants",
+      "names": ["setresuid", "setresuid32", "setresgid", "setresgid32"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Deny setreuid/setregid: the 'real and effective' UID/GID variants",
+      "names": ["setreuid", "setreuid32", "setregid", "setregid32"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Deny setfsuid/setfsgid: filesystem UID/GID used for file access checks",
+      "names": ["setfsuid", "setfsuid32", "setfsgid", "setfsgid32"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    }
+  ]
+}

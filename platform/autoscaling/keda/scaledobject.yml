@@ -1,0 +1,139 @@
+# ==============================================================================
+# KEDA SCALEDOBJECT — multi-trigger autoscaling (Prometheus + CPU)
+# ==============================================================================
+# KEDA (Kubernetes Event-Driven Autoscaling) extends the Kubernetes HPA with
+# 50+ built-in scalers for event sources: Kafka, RabbitMQ, Azure Service Bus,
+# AWS SQS, Prometheus, Redis, Cron schedules, and more.
+#
+# HOW KEDA WORKS:
+#   1. The KEDA operator watches ScaledObject resources.
+#   2. For each ScaledObject, KEDA creates/manages an HPA on your behalf.
+#   3. KEDA's metric server exposes the trigger values to the HPA via the
+#      external.metrics.k8s.io API (similar to Prometheus Adapter).
+#   4. The HPA scales the Deployment up/down based on KEDA's metric values.
+#   5. KEDA can also scale to ZERO replicas (HPA minimum is 1 — KEDA extends this).
+#
+# INSTALLATION:
+#   helm repo add kedacore https://kedacore.github.io/charts
+#   helm install keda kedacore/keda --namespace keda --create-namespace
+#
+# See README.md in this directory for more installation and usage details.
+#
+# Apply:
+#   kubectl apply -f scaledobject.yml
+#
+# Check scaling status:
+#   kubectl get scaledobject myapp-scaledobject -n workloads
+#   kubectl describe scaledobject myapp-scaledobject -n workloads
+#   kubectl get hpa -n workloads  # KEDA creates this automatically
+# ==============================================================================
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: myapp-scaledobject
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: myapp-scaledobject
+    app.kubernetes.io/instance: myapp-scaledobject
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: myapp
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      KEDA ScaledObject for myapp-deployment with two triggers: Prometheus
+      HTTP request rate (scale on load) and CPU utilization (scale on compute).
+      KEDA manages the underlying HPA automatically.
+spec:
+  # The Deployment this ScaledObject controls.
+  # KEDA creates an HPA targeting this Deployment.
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp-deployment
+
+  # ---------------------------------------------------------------------------
+  # Replica bounds
+  # ---------------------------------------------------------------------------
+  # minReplicaCount: 1 — KEDA supports 0 (scale to zero), but 1 keeps the app
+  # warm and avoids cold-start latency. Use 0 for batch/periodic workloads.
+  minReplicaCount: 1
+  maxReplicaCount: 20
+
+  # ---------------------------------------------------------------------------
+  # cooldownPeriod: seconds to wait after the last trigger fires before
+  # considering scale-down. 300s (5 minutes) prevents thrashing when load
+  # briefly drops between request bursts.
+  # ---------------------------------------------------------------------------
+  cooldownPeriod: 300
+
+  # ---------------------------------------------------------------------------
+  # pollingInterval: how often KEDA polls the trigger sources (default: 30s).
+  # Lower values = faster response, more API calls to Prometheus.
+  # ---------------------------------------------------------------------------
+  pollingInterval: 15
+
+  # ---------------------------------------------------------------------------
+  # Triggers — KEDA evaluates ALL triggers and scales to satisfy the one
+  # requiring the most replicas (same semantics as HPA with multiple metrics).
+  # ---------------------------------------------------------------------------
+  triggers:
+    # -----------------------------------------------------------------------
+    # Trigger 1: Prometheus — HTTP request rate
+    # -----------------------------------------------------------------------
+    # KEDA queries Prometheus directly (not via the adapter) and computes:
+    #   desiredReplicas = ceil(queryResult / threshold)
+    #
+    # If sum(rate(http_requests_total[1m])) = 450 and threshold = 100:
+    #   desiredReplicas = ceil(450 / 100) = 5
+    #
+    # serverAddress: the Prometheus service endpoint inside the cluster.
+    # query: any PromQL expression that returns a scalar value.
+    # threshold: the per-replica target value.
+    # -----------------------------------------------------------------------
+    - type: prometheus
+      metadata:
+        # Point to your Prometheus instance — adjust namespace if needed
+        serverAddress: http://prometheus-operated.monitoring.svc.cluster.local:9090
+        # PromQL query returning total request rate across all pods
+        query: sum(rate(http_requests_total{namespace="workloads",app="myapp"}[1m]))
+        # Scale so each replica handles at most 100 req/s
+        threshold: "100"
+        # activationThreshold: below this value, KEDA will not scale up at all.
+        # Useful to avoid scaling from 0 on negligible traffic.
+        activationThreshold: "5"
+
+    # -----------------------------------------------------------------------
+    # Trigger 2: CPU utilization
+    # -----------------------------------------------------------------------
+    # KEDA's cpu trigger wraps the native HPA CPU metric.
+    # type: Utilization means: value is a percentage of the CPU request.
+    # value: "60" means scale when average CPU utilization > 60%.
+    #
+    # This trigger ensures the Deployment also scales under CPU-intensive
+    # workloads that don't generate HTTP traffic (e.g., background processing).
+    # -----------------------------------------------------------------------
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "60"
+
+  # ---------------------------------------------------------------------------
+  # Advanced HPA configuration (optional)
+  # KEDA passes these through to the underlying HPA's behavior field.
+  # ---------------------------------------------------------------------------
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Percent
+              value: 25
+              periodSeconds: 60
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 4
+              periodSeconds: 60

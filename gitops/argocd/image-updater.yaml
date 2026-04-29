@@ -1,0 +1,123 @@
+---
+# ==============================================================================
+# ARGOCD IMAGE UPDATER — ConfigMap and usage guide
+# ==============================================================================
+# ArgoCD Image Updater (ACIU) automates the process of updating container image
+# tags in ArgoCD Applications when new images are pushed to a registry.
+#
+# INSTALLATION:
+#   The full install manifest is available at:
+#   https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/stable/manifests/install.yaml
+#
+#   Or via Helm:
+#     helm repo add argo https://argoproj.github.io/argo-helm
+#     helm install argocd-image-updater argo/argocd-image-updater \
+#       --namespace argocd \
+#       --set config.argocd.serverAddress=http://argocd-server.argocd.svc \
+#       --set config.argocd.insecure=true
+#
+# HOW IT WORKS:
+#   1. Image Updater polls the container registry at a configurable interval.
+#   2. It evaluates the update strategy (latest, semver, digest, name).
+#   3. If a newer image is found, it updates the Application's image parameter:
+#      - Helm mode: updates the values file or --set parameter
+#      - Kustomize mode: updates the kustomization.yaml image tag
+#      - Plain YAML: not supported (use Kustomize or Helm wrappers)
+#   4. For GitOps write-back (recommended): Image Updater commits the new image
+#      tag to the Git repository so ArgoCD syncs from Git (not from live state).
+#
+# Apply:
+#   kubectl apply -f image-updater.yaml
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-image-updater-config
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-image-updater-config
+    app.kubernetes.io/instance: argocd-image-updater-config
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: image-updater
+    app.kubernetes.io/part-of: argocd
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Configuration for ArgoCD Image Updater. Controls log level, registry
+      credentials, and global update behavior.
+data:
+  # Log level: debug, info, warn, error
+  log.level: info
+
+  # How often to check registries for new images (default: 2m)
+  image.update.interval: 2m
+
+  # Optional: restrict which registries are allowed (security boundary).
+  # If not set, all registries are allowed.
+  # registries.conf: |
+  #   registries:
+  #     - name: GitHub Container Registry
+  #       prefix: ghcr.io
+  #       api_url: https://ghcr.io
+  #       credentials: secret:argocd/ghcr-credentials#token
+  #       defaultns: library
+
+---
+# ==============================================================================
+# HOW TO ANNOTATE AN ARGOCD APPLICATION FOR AUTO-UPDATES
+# ==============================================================================
+# Add these annotations to an existing ArgoCD Application resource.
+# Image Updater watches all Applications in the argocd namespace.
+#
+# EXAMPLE APPLICATION WITH IMAGE UPDATER ANNOTATIONS:
+#
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: myapp
+#   namespace: argocd
+#   annotations:
+#     # image-list: declare the images to watch.
+#     # Format: <alias>=<registry>/<image>
+#     # The alias is used in subsequent annotations to reference the image.
+#     argocd-image-updater.argoproj.io/image-list: myapp=ghcr.io/example/myapp
+#
+#     # update-strategy: how to determine if a newer image is available.
+#     # latest:  use the most recently pushed image (by date) matching the tag filter
+#     # semver:  use the highest semver tag (e.g., v1.2.3 -> v1.3.0)
+#     # digest:  always update to the latest digest of a specific tag (e.g., :main)
+#     # name:    use alphabetical ordering of tag names
+#     argocd-image-updater.argoproj.io/myapp.update-strategy: latest
+#
+#     # allow-tags: a regexp or semver constraint filtering which tags to consider.
+#     # regexp:^main-.*  — only consider tags starting with 'main-' (e.g., main-abc1234)
+#     # This pattern works well for CI pipelines that tag images as:
+#     #   ghcr.io/example/myapp:main-<git-sha>
+#     argocd-image-updater.argoproj.io/myapp.allow-tags: regexp:^main-.*
+#
+#     # write-back-method: how Image Updater records the new image tag.
+#     # argocd: updates the Application's parameter directly (live state, no Git)
+#     # git:    commits the updated image tag to the Git repository (recommended for GitOps)
+#     argocd-image-updater.argoproj.io/write-back-method: git
+#
+#     # For Helm applications, specify which value to update:
+#     argocd-image-updater.argoproj.io/myapp.helm.image-name: image.repository
+#     argocd-image-updater.argoproj.io/myapp.helm.image-tag: image.tag
+#
+# ==============================================================================
+# REGISTRY CREDENTIALS SECRET
+# ==============================================================================
+# For private registries, create a Secret with registry credentials:
+#
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: ghcr-credentials
+#   namespace: argocd
+# type: Opaque
+# stringData:
+#   token: <github-personal-access-token-with-packages-read>
+#
+# Then reference it in the registries.conf above:
+#   credentials: secret:argocd/ghcr-credentials#token
+# ==============================================================================
