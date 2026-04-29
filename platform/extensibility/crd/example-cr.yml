@@ -1,0 +1,73 @@
+# ==============================================================================
+# CUSTOM RESOURCE INSTANCE — WebApplication
+# ==============================================================================
+# This is an instance of the WebApplication CRD defined in example-crd.yml.
+# An operator watching WebApplication resources would reconcile this object
+# into a Deployment, Service, and optional Ingress in the same namespace.
+#
+# Prerequisites:
+#   kubectl apply -f example-crd.yml  (CRD must be applied first)
+#
+# Apply:
+#   kubectl apply -f example-cr.yml
+#
+# View the instance:
+#   kubectl get webapp -n workloads
+#   kubectl describe webapp my-web-app -n workloads
+#
+# Scale (enabled via scale subresource in the CRD):
+#   kubectl scale webapp my-web-app -n workloads --replicas=5
+# ==============================================================================
+apiVersion: platform.example.com/v1alpha1
+kind: WebApplication
+metadata:
+  name: my-web-app
+  namespace: workloads
+  labels:
+    # Standard app.kubernetes.io/* labels — applied to the CR object itself.
+    # The operator should propagate these labels to managed Deployment and Service.
+    app.kubernetes.io/name: my-web-app
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: web-platform
+    app.kubernetes.io/managed-by: webapp-operator
+    app.kubernetes.io/version: "2.3.1"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      WebApplication instance for the my-web-app frontend service.
+      Managed by the platform-operator. Do not edit the resulting Deployment
+      or Service directly — changes will be overwritten by the operator reconciler.
+    # Document operator ownership for multi-team environments
+    platform.example.com/owner-team: "platform-frontend"
+    platform.example.com/contact: "frontend-team@example.com"
+spec:
+  # image: Container image to deploy.
+  # Must match the pattern <registry>/<name>:<tag> — no :latest allowed (CRD schema validation).
+  image: registry.example.com/my-web-app:v2.3.1
+
+  # replicas: Desired number of pod replicas.
+  # Must be between 1 and 100 (CRD schema validation: minimum: 1, maximum: 100).
+  # HPA can override this value via the scale subresource.
+  replicas: 3
+
+  # port: The port the container listens on.
+  # The operator creates a Service targeting this port.
+  port: 8080
+
+  # environment: Controls which configuration profile the operator applies.
+  # Must be one of: dev, staging, production (CRD schema validation: enum).
+  # Operators typically use this to select different resource tiers and
+  # enable/disable features (e.g., debug endpoints only in dev).
+  environment: production
+
+  # resources: CPU and memory requests for the application container.
+  # The operator injects these into the managed Deployment's container spec.
+  resources:
+    cpu: "200m"      # 0.2 cores — valid Kubernetes CPU quantity
+    memory: "256Mi"  # 256 mebibytes — valid Kubernetes memory quantity
+
+  # ingress: Optional external access configuration.
+  # When enabled: true, the operator creates an Ingress object targeting the Service.
+  ingress:
+    enabled: true
+    host: my-web-app.example.com
