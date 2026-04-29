@@ -1,0 +1,36 @@
+# ==============================================================================
+# overlays/prod/patch-replicas.yaml
+# Strategic merge patch for production replica count.
+#
+# This patch file is provided as an EXPLICIT reference showing how replica
+# patching works as a strategic merge patch (in addition to the `replicas:`
+# shorthand in kustomization.yaml).
+#
+# In practice, the kustomization.yaml `replicas:` field handles this more
+# cleanly. This file documents the equivalent manual approach — useful when
+# you need to understand what Kustomize's replicas shorthand does under the hood,
+# or when using an older version of Kustomize that doesn't support it.
+#
+# NOTE: This patch is NOT applied in the prod kustomization.yaml because the
+# `replicas:` field already handles replica count. If you add this to patches:,
+# you will get a conflict. This file serves as documentation only.
+#
+# To apply this patch instead of the kustomization.yaml replicas field:
+#   1. Remove the `replicas:` block from kustomization.yaml
+#   2. Add this file to the `patches:` list
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  # Production runs 4 replicas for high availability.
+  # With topologySpreadConstraints set to spread across zones:
+  #   4 replicas / 2 zones = 2 pods per zone
+  #   Zone failure → 2 pods in the surviving zone continue serving traffic
+  #
+  # Scale up here if:
+  #   - Traffic grows beyond current capacity (monitor CPU/memory/RPS per pod)
+  #   - You add a third availability zone (target 2+ per zone)
+  #   - HPA is not fast enough for your traffic spike profile
+  replicas: 4
