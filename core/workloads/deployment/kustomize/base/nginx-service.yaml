@@ -42,7 +42,7 @@ spec:
     app.kubernetes.io/instance: nginx
 
   ports:
-  - name: http
-    port: 80          # Port the Service is reachable on (ClusterIP:80)
-    targetPort: 80    # Port on the Pod the traffic is forwarded to
-    protocol: TCP
+    - name: http
+      port: 80          # Port the Service is reachable on (ClusterIP:80)
+      targetPort: 80    # Port on the Pod the traffic is forwarded to
+      protocol: TCP

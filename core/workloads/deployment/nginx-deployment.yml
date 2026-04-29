@@ -234,140 +234,140 @@ spec:
       # In production with 2+ replicas, this prevents both replicas landing
       # on the same node or zone — a zone outage would then still be served.
       topologySpreadConstraints:
-      - maxSkew: 1
-        topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: DoNotSchedule
-        labelSelector:
-          matchLabels:
-            app.kubernetes.io/name: nginx
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: nginx
 
       # ─── VOLUMES ─────────────────────────────────────────────────────────
       volumes:
-      # ConfigMap volume: mounts nginx.conf from the ConfigMap defined above.
-      # When the ConfigMap is updated, the mounted file is updated (within
-      # ~60s by default), but nginx won't pick it up until reloaded or restarted.
-      - name: nginx-config
-        configMap:
-          name: nginx-config
-          items:
-          - key: nginx.conf
-            path: nginx.conf
+        # ConfigMap volume: mounts nginx.conf from the ConfigMap defined above.
+        # When the ConfigMap is updated, the mounted file is updated (within
+        # ~60s by default), but nginx won't pick it up until reloaded or restarted.
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+            items:
+              - key: nginx.conf
+                path: nginx.conf
 
-      # emptyDir volumes for nginx's writable directories.
-      # Required because readOnlyRootFilesystem: true prevents writes to the
-      # container image's own filesystem.
-      - name: nginx-tmp
-        emptyDir: {}
-      - name: nginx-run
-        emptyDir: {}
-      - name: nginx-cache
-        emptyDir: {}
+        # emptyDir volumes for nginx's writable directories.
+        # Required because readOnlyRootFilesystem: true prevents writes to the
+        # container image's own filesystem.
+        - name: nginx-tmp
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
 
       containers:
-      - name: nginx
-        # Pin to a specific minor version for production stability.
-        # In a real pipeline, use a digest: nginx@sha256:<digest>
-        image: nginx:1.25-alpine
+        - name: nginx
+          # Pin to a specific minor version for production stability.
+          # In a real pipeline, use a digest: nginx@sha256:<digest>
+          image: nginx:1.25-alpine
 
-        ports:
-        - containerPort: 80
-          protocol: TCP
-          name: http
+          ports:
+            - containerPort: 80
+              protocol: TCP
+              name: http
 
-        # ─── CONTAINER SECURITY CONTEXT ──────────────────────────────────
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - ALL
-            add:
-            - NET_BIND_SERVICE
+          # ─── CONTAINER SECURITY CONTEXT ──────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
 
-        # ─── RESOURCE MANAGEMENT ─────────────────────────────────────────
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            # memory limit == request → Guaranteed QoS class
-            # (highest eviction priority; protected from OOM eviction)
-            memory: "128Mi"
-            # CPU limit intentionally omitted to avoid throttling.
-            # nginx CPU usage is bursty; capping it would increase p99 latency.
+          # ─── RESOURCE MANAGEMENT ─────────────────────────────────────────
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              # memory limit == request → Guaranteed QoS class
+              # (highest eviction priority; protected from OOM eviction)
+              memory: "128Mi"
+              # CPU limit intentionally omitted to avoid throttling.
+              # nginx CPU usage is bursty; capping it would increase p99 latency.
 
-        # ─── VOLUME MOUNTS ────────────────────────────────────────────────
-        volumeMounts:
-        # Mount the custom nginx.conf from the ConfigMap.
-        # This replaces the default /etc/nginx/nginx.conf inside the container.
-        - name: nginx-config
-          mountPath: /etc/nginx/nginx.conf
-          subPath: nginx.conf
-          readOnly: true   # The config should never be modified by the running process
+          # ─── VOLUME MOUNTS ────────────────────────────────────────────────
+          volumeMounts:
+            # Mount the custom nginx.conf from the ConfigMap.
+            # This replaces the default /etc/nginx/nginx.conf inside the container.
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true   # The config should never be modified by the running process
 
-        # Writable directories nginx needs at runtime
-        - name: nginx-tmp
-          mountPath: /tmp
-        - name: nginx-run
-          mountPath: /var/run
-        - name: nginx-cache
-          mountPath: /var/cache/nginx
+            # Writable directories nginx needs at runtime
+            - name: nginx-tmp
+              mountPath: /tmp
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
 
-        # ─── LIFECYCLE ────────────────────────────────────────────────────
-        lifecycle:
-          preStop:
-            exec:
-              # Sleep 5s before nginx receives SIGTERM.
-              # This gives kube-proxy and cloud load balancers time to remove
-              # this Pod's IP from their routing tables.
-              # Without this, requests can arrive at a Pod that has already
-              # started shutting down, resulting in connection refused errors.
-              command: ["/bin/sh", "-c", "sleep 5"]
+          # ─── LIFECYCLE ────────────────────────────────────────────────────
+          lifecycle:
+            preStop:
+              exec:
+                # Sleep 5s before nginx receives SIGTERM.
+                # This gives kube-proxy and cloud load balancers time to remove
+                # this Pod's IP from their routing tables.
+                # Without this, requests can arrive at a Pod that has already
+                # started shutting down, resulting in connection refused errors.
+                command: ["/bin/sh", "-c", "sleep 5"]
 
-        # ─── PROBES ───────────────────────────────────────────────────────
-        # Three probes serve three different purposes. ALL THREE should point
-        # to DIFFERENT endpoints where possible.
+          # ─── PROBES ───────────────────────────────────────────────────────
+          # Three probes serve three different purposes. ALL THREE should point
+          # to DIFFERENT endpoints where possible.
 
-        # startupProbe: Runs FIRST. liveness and readiness probes are DISABLED
-        # until the startup probe succeeds. This prevents premature restarts
-        # during slow application initialization (loading ML models, warming caches).
-        # With failureThreshold: 30 and periodSeconds: 2, the app has up to
-        # 60 seconds to start before being killed.
-        startupProbe:
-          httpGet:
-            path: /healthz
-            port: 80
-          # Allow up to 30 * 2 = 60 seconds for nginx to start.
-          failureThreshold: 30
-          periodSeconds: 2
-          timeoutSeconds: 3
+          # startupProbe: Runs FIRST. liveness and readiness probes are DISABLED
+          # until the startup probe succeeds. This prevents premature restarts
+          # during slow application initialization (loading ML models, warming caches).
+          # With failureThreshold: 30 and periodSeconds: 2, the app has up to
+          # 60 seconds to start before being killed.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            # Allow up to 30 * 2 = 60 seconds for nginx to start.
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 3
 
-        # readinessProbe: Controls Service endpoint inclusion.
-        # Failure removes this Pod from the Service's EndpointSlice → no traffic.
-        # It does NOT restart the container. Use this for transient "not ready"
-        # states (e.g., dependency temporarily unavailable, cache miss rate high).
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 80
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          failureThreshold: 3
-          # After 3 consecutive successes, the probe is considered passing again.
-          successThreshold: 1
-          timeoutSeconds: 3
+          # readinessProbe: Controls Service endpoint inclusion.
+          # Failure removes this Pod from the Service's EndpointSlice → no traffic.
+          # It does NOT restart the container. Use this for transient "not ready"
+          # states (e.g., dependency temporarily unavailable, cache miss rate high).
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            # After 3 consecutive successes, the probe is considered passing again.
+            successThreshold: 1
+            timeoutSeconds: 3
 
-        # livenessProbe: Restarts the container if it fails.
-        # Use this for detecting deadlocks, hung goroutines, or processes that
-        # appear alive but can no longer handle requests.
-        # Starts ONLY AFTER the startupProbe succeeds.
-        # Use a HIGHER initialDelaySeconds than readinessProbe to avoid
-        # restarting a container that is merely slow to become ready.
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 80
-          initialDelaySeconds: 15
-          periodSeconds: 20
-          failureThreshold: 3
-          timeoutSeconds: 3
+          # livenessProbe: Restarts the container if it fails.
+          # Use this for detecting deadlocks, hung goroutines, or processes that
+          # appear alive but can no longer handle requests.
+          # Starts ONLY AFTER the startupProbe succeeds.
+          # Use a HIGHER initialDelaySeconds than readinessProbe to avoid
+          # restarting a container that is merely slow to become ready.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 3

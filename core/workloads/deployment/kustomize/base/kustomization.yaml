@@ -27,5 +27,5 @@ commonAnnotations:
 
 # The base resources. Overlays inherit all of these and can patch them.
 resources:
-- nginx-deployment.yaml
-- nginx-service.yaml
+  - nginx-deployment.yaml
+  - nginx-service.yaml

@@ -216,102 +216,102 @@ spec:
           type: RuntimeDefault
 
       volumes:
-      - name: nginx-tmp
-        emptyDir: {}
-      - name: nginx-run
-        emptyDir: {}
-      - name: nginx-cache
-        emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
 
       containers:
-      - name: app
-        image: nginx:1.25-alpine
+        - name: app
+          image: nginx:1.25-alpine
 
-        ports:
-        - containerPort: 80
-          protocol: TCP
-          name: http
+          ports:
+            - containerPort: 80
+              protocol: TCP
+              name: http
 
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - ALL
-            add:
-            - NET_BIND_SERVICE
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
 
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "128Mi"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
 
-        volumeMounts:
-        - name: nginx-tmp
-          mountPath: /tmp
-        - name: nginx-run
-          mountPath: /var/run
-        - name: nginx-cache
-          mountPath: /var/cache/nginx
+          volumeMounts:
+            - name: nginx-tmp
+              mountPath: /tmp
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
 
-        lifecycle:
-          preStop:
-            exec:
-              # ── preStop hook relationship to rolling update ────────────────
-              # When a Pod is selected for termination during a rolling update:
-              # 1. Pod is removed from Service EndpointSlice (stops receiving new requests)
-              # 2. preStop hook runs (sleep 5s gives LB time to drain existing connections)
-              # 3. SIGTERM is sent to the container
-              # 4. nginx handles SIGTERM with graceful worker shutdown
-              # 5. SIGKILL sent after terminationGracePeriodSeconds if still running
-              #
-              # The 5-second sleep is the "connection drain" window. Without it,
-              # some load balancers (AWS ALB, kube-proxy iptables) may still route
-              # new requests to the Pod for a few seconds after it starts terminating,
-              # causing "connection refused" errors to clients.
-              command: ["/bin/sh", "-c", "sleep 5"]
+          lifecycle:
+            preStop:
+              exec:
+                # ── preStop hook relationship to rolling update ────────────────
+                # When a Pod is selected for termination during a rolling update:
+                # 1. Pod is removed from Service EndpointSlice (stops receiving new requests)
+                # 2. preStop hook runs (sleep 5s gives LB time to drain existing connections)
+                # 3. SIGTERM is sent to the container
+                # 4. nginx handles SIGTERM with graceful worker shutdown
+                # 5. SIGKILL sent after terminationGracePeriodSeconds if still running
+                #
+                # The 5-second sleep is the "connection drain" window. Without it,
+                # some load balancers (AWS ALB, kube-proxy iptables) may still route
+                # new requests to the Pod for a few seconds after it starts terminating,
+                # causing "connection refused" errors to clients.
+                command: ["/bin/sh", "-c", "sleep 5"]
 
-        # ── Probe relationship to rolling update ────────────────────────────
-        # The readinessProbe is the primary gate for the rolling update:
-        #   - A new Pod must pass readinessProbe to be counted as "Available"
-        #   - Combined with minReadySeconds, this is the "rollout gate"
-        #   - If the probe fails, the rollout stalls (no more old pods removed)
-        #   - `progressDeadlineSeconds` determines when the stall becomes a failure
-        startupProbe:
-          httpGet:
-            path: /
-            port: 80
-          # failureThreshold * periodSeconds = max startup time allowed
-          # 30 * 2s = 60 seconds for nginx to start
-          failureThreshold: 30
-          periodSeconds: 2
-          timeoutSeconds: 3
+          # ── Probe relationship to rolling update ────────────────────────────
+          # The readinessProbe is the primary gate for the rolling update:
+          #   - A new Pod must pass readinessProbe to be counted as "Available"
+          #   - Combined with minReadySeconds, this is the "rollout gate"
+          #   - If the probe fails, the rollout stalls (no more old pods removed)
+          #   - `progressDeadlineSeconds` determines when the stall becomes a failure
+          startupProbe:
+            httpGet:
+              path: /
+              port: 80
+            # failureThreshold * periodSeconds = max startup time allowed
+            # 30 * 2s = 60 seconds for nginx to start
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 3
 
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 80
-          # initialDelaySeconds: wait before first probe attempt.
-          # For fast-starting apps, set this low. For slow-starting apps, use
-          # startupProbe instead (which gates readiness/liveness entirely).
-          initialDelaySeconds: 5
-          # periodSeconds: how often to probe.
-          # Lower = faster detection of readiness, more probe traffic.
-          periodSeconds: 10
-          # failureThreshold: how many consecutive failures before marking not-ready.
-          # 3 failures * 10s = 30 seconds of failure before traffic is removed.
-          failureThreshold: 3
-          timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            # initialDelaySeconds: wait before first probe attempt.
+            # For fast-starting apps, set this low. For slow-starting apps, use
+            # startupProbe instead (which gates readiness/liveness entirely).
+            initialDelaySeconds: 5
+            # periodSeconds: how often to probe.
+            # Lower = faster detection of readiness, more probe traffic.
+            periodSeconds: 10
+            # failureThreshold: how many consecutive failures before marking not-ready.
+            # 3 failures * 10s = 30 seconds of failure before traffic is removed.
+            failureThreshold: 3
+            timeoutSeconds: 3
 
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 80
-          # Higher initialDelay than readiness — give the app time to become
-          # ready before we start checking liveness (avoid restart loops).
-          initialDelaySeconds: 15
-          periodSeconds: 20
-          failureThreshold: 3
-          timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            # Higher initialDelay than readiness — give the app time to become
+            # ready before we start checking liveness (avoid restart loops).
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 3

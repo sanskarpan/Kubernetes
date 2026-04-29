@@ -22,13 +22,13 @@ spec:
   template:
     spec:
       containers:
-      - name: nginx
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            # Staging uses the same memory limit as what we target for production.
-            # This ensures load tests surface OOM issues before they hit prod.
-            memory: "256Mi"
-            # No CPU limit — load tests should not be throttled artificially.
+        - name: nginx
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              # Staging uses the same memory limit as what we target for production.
+              # This ensures load tests surface OOM issues before they hit prod.
+              memory: "256Mi"
+              # No CPU limit — load tests should not be throttled artificially.

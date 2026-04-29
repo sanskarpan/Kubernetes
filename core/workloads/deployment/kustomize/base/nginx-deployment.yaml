@@ -82,78 +82,78 @@ spec:
           type: RuntimeDefault
 
       volumes:
-      - name: nginx-tmp
-        emptyDir: {}
-      - name: nginx-run
-        emptyDir: {}
-      - name: nginx-cache
-        emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
 
       containers:
-      - name: nginx
-        # Image without a tag. Overlays supply the tag via `images:` in their
-        # kustomization.yaml. Using `kustomize edit set image` in CI is idiomatic.
-        # Base uses "latest" as a placeholder; overlays pin to specific tags.
-        image: nginx:1.25-alpine
+        - name: nginx
+          # Image without a tag. Overlays supply the tag via `images:` in their
+          # kustomization.yaml. Using `kustomize edit set image` in CI is idiomatic.
+          # Base uses "latest" as a placeholder; overlays pin to specific tags.
+          image: nginx:1.25-alpine
 
-        ports:
-        - containerPort: 80
-          protocol: TCP
-          name: http
+          ports:
+            - containerPort: 80
+              protocol: TCP
+              name: http
 
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - ALL
-            add:
-            - NET_BIND_SERVICE
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
 
-        # Resource requests are defined in the base (required for scheduling).
-        # Limits are intentionally omitted — overlays add them via patches
-        # because limits vary significantly between dev, staging, and prod.
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          # limits: not set here — added by overlay patches
+          # Resource requests are defined in the base (required for scheduling).
+          # Limits are intentionally omitted — overlays add them via patches
+          # because limits vary significantly between dev, staging, and prod.
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+              # limits: not set here — added by overlay patches
 
-        volumeMounts:
-        - name: nginx-tmp
-          mountPath: /tmp
-        - name: nginx-run
-          mountPath: /var/run
-        - name: nginx-cache
-          mountPath: /var/cache/nginx
+          volumeMounts:
+            - name: nginx-tmp
+              mountPath: /tmp
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
 
-        lifecycle:
-          preStop:
-            exec:
-              command: ["/bin/sh", "-c", "sleep 5"]
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
 
-        startupProbe:
-          httpGet:
-            path: /
-            port: 80
-          failureThreshold: 30
-          periodSeconds: 2
-          timeoutSeconds: 3
+          startupProbe:
+            httpGet:
+              path: /
+              port: 80
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 3
 
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          failureThreshold: 3
-          timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
 
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 15
-          periodSeconds: 20
-          failureThreshold: 3
-          timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 3

@@ -33,23 +33,23 @@ spec:
   template:
     spec:
       containers:
-      - name: nginx
-        resources:
-          requests:
-            # Production request: sized for the typical (P50) pod load.
-            # This is what the Kubernetes scheduler uses to place pods on nodes.
-            # If the sum of requests on a node exceeds node capacity, new pods
-            # are not scheduled there (Pending state).
-            memory: "256Mi"
-            cpu: "200m"
-          limits:
-            # Production memory limit: sized to handle peak (P99) traffic spikes.
-            # nginx memory usage scales with: concurrent connections × per-connection buffer.
-            # For a typical reverse proxy workload, 512Mi handles significant traffic.
-            # Increase if you see OOMKilled events: kubectl get events -n prod | grep OOM
-            memory: "512Mi"
-            # CPU limit intentionally omitted.
-            # Production traffic has bursts (marketing campaigns, viral events).
-            # CPU throttling during these bursts would directly increase p99 latency.
-            # Monitor `container_cpu_throttled_seconds_total` in Prometheus.
-            # If the pod consistently uses >800m CPU, increase the cpu request instead.
+        - name: nginx
+          resources:
+            requests:
+              # Production request: sized for the typical (P50) pod load.
+              # This is what the Kubernetes scheduler uses to place pods on nodes.
+              # If the sum of requests on a node exceeds node capacity, new pods
+              # are not scheduled there (Pending state).
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              # Production memory limit: sized to handle peak (P99) traffic spikes.
+              # nginx memory usage scales with: concurrent connections × per-connection buffer.
+              # For a typical reverse proxy workload, 512Mi handles significant traffic.
+              # Increase if you see OOMKilled events: kubectl get events -n prod | grep OOM
+              memory: "512Mi"
+              # CPU limit intentionally omitted.
+              # Production traffic has bursts (marketing campaigns, viral events).
+              # CPU throttling during these bursts would directly increase p99 latency.
+              # Monitor `container_cpu_throttled_seconds_total` in Prometheus.
+              # If the pod consistently uses >800m CPU, increase the cpu request instead.
