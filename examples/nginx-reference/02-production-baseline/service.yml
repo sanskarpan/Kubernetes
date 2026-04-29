@@ -1,0 +1,58 @@
+---
+# ClusterIP Service — Internal traffic only
+# ==========================================
+# In production, use ClusterIP + Ingress rather than NodePort or LoadBalancer:
+#   - ClusterIP: one stable virtual IP per service (cheap, internal only)
+#   - Ingress: one L7 load balancer routes to many services by host/path (efficient)
+#   - NodePort: exposes a random high port on EVERY node (coarse-grained, not production)
+#   - LoadBalancer: one cloud LB per service (expensive at scale)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.27"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "ClusterIP Service for the production nginx Deployment."
+spec:
+  type: ClusterIP
+
+  ports:
+    - port: 80           # Port the Service listens on (cluster-internal)
+      targetPort: http   # Named port on the pod (maps to containerPort 8080)
+      protocol: TCP
+      name: http
+
+  # Routes traffic to Pods with these labels
+  selector:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+
+---
+# ServiceAccount — Dedicated identity for nginx pods
+# ====================================================
+# Every pod runs as a ServiceAccount. The 'default' ServiceAccount in each namespace
+# auto-mounts a token with some cluster permissions — never use it for workloads.
+# Create a dedicated SA with no permissions (unless the pod needs K8s API access).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.27"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Dedicated ServiceAccount for nginx pods. No K8s API permissions required."
+# Disable token auto-mounting at the SA level (also set on the pod spec)
+automountServiceAccountToken: false
