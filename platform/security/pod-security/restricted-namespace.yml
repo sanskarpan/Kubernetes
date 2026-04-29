@@ -1,0 +1,90 @@
+# ==============================================================================
+# NAMESPACE WITH POD SECURITY ADMISSION LABELS — RESTRICTED
+# ==============================================================================
+# This namespace rejects pods that don't meet the restricted standard
+# (runAsNonRoot, no privileged, seccompProfile, allowPrivilegeEscalation: false,
+# capabilities drop: ALL, no hostPath volumes, etc.)
+#
+# All three PSA modes (enforce, audit, warn) are set to "restricted" with
+# version "latest" so that:
+#   - enforce: Pods violating the standard are REJECTED at admission
+#   - audit:   Violations are recorded in the API server audit log
+#   - warn:    A warning is returned in the API response for violations
+#
+# Setting all three modes ensures:
+#   1. Violations are blocked (enforce)
+#   2. You have an audit trail if anything slips through (audit)
+#   3. Operators see immediate feedback in their terminal (warn)
+#
+# IMPORTANT: Before applying enforce mode to an existing namespace,
+# audit and warn first to discover existing violations:
+#
+#   Step 1 — Audit only:
+#     kubectl label namespace secure-workloads \
+#       pod-security.kubernetes.io/audit=restricted \
+#       pod-security.kubernetes.io/warn=restricted
+#
+#   Step 2 — Review warnings and fix pod specs over 1-2 weeks
+#
+#   Step 3 — Add enforce label (apply this file):
+#     kubectl apply -f restricted-namespace.yml
+#
+# Apply:
+#   kubectl apply -f restricted-namespace.yml
+#
+# Verify:
+#   kubectl get namespace secure-workloads --show-labels
+#
+# Test enforcement (should be rejected):
+#   kubectl run privileged-test --image=nginx -n secure-workloads \
+#     --overrides='{"spec":{"containers":[{"name":"c","image":"nginx","securityContext":{"privileged":true}}]}}'
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-workloads
+  labels:
+    # -------------------------------------------------------------------------
+    # Standard namespace identification labels
+    # -------------------------------------------------------------------------
+    app.kubernetes.io/name: secure-workloads
+    app.kubernetes.io/component: namespace
+    app.kubernetes.io/part-of: platform-security
+    app.kubernetes.io/managed-by: kubectl
+    environment: production
+
+    # -------------------------------------------------------------------------
+    # Pod Security Admission (PSA) labels
+    # These labels are read by the built-in PSA admission controller.
+    # No additional installation required — PSA is part of the Kubernetes API server.
+    #
+    # Format: pod-security.kubernetes.io/<mode>: <level>
+    #         pod-security.kubernetes.io/<mode>-version: <kubernetes-version>
+    #
+    # Levels: privileged | baseline | restricted
+    # Modes:  enforce | audit | warn
+    # Version: latest (recommended) or specific version like v1.28
+    # -------------------------------------------------------------------------
+
+    # enforce: Pods that violate the restricted standard are REJECTED.
+    # This is the hard block — non-compliant pods cannot run in this namespace.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+
+    # audit: Violations are written to the API server audit log.
+    # Even with enforce in place, audit provides a log trail for compliance reporting.
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+
+    # warn: A human-readable warning is returned in the kubectl output.
+    # Useful for catching issues during development before they hit a CI/CD pipeline.
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+
+  annotations:
+    kubernetes.io/description: >
+      Production namespace with Pod Security Admission enforcing the "restricted"
+      standard. Rejects any pod that does not set: runAsNonRoot, seccompProfile
+      (RuntimeDefault or Localhost), allowPrivilegeEscalation: false, and
+      capabilities.drop: [ALL]. HostPath volumes and host namespace sharing are
+      also blocked. Apply this namespace as the baseline for all application teams.
