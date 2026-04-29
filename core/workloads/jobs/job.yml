@@ -1,0 +1,185 @@
+# Two resources in one file — apply with: kubectl apply -f job.yml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: workloads
+  labels:
+    app.kubernetes.io/part-of: kube-platform
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+  annotations:
+    kubernetes.io/description: "Namespace for batch workloads — Jobs, CronJobs, and one-time tasks"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: db-migration
+    app.kubernetes.io/instance: db-migration
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/component: migration
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Database migration Job — runs schema migrations before application deployment"
+    # In a GitOps workflow (ArgoCD, Flux), this Job would be triggered as a PreSync hook:
+    # argocd.argoproj.io/hook: PreSync
+    # argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  # completions: how many pods must complete successfully for the Job to be done.
+  # For a migration, we need exactly 1 successful run — more would re-run migrations,
+  # which is only safe if migrations are idempotent (they should be!).
+  completions: 1
+
+  # parallelism: how many pods can run at the same time.
+  # For migrations, this MUST be 1 — running migrations in parallel risks:
+  #   1. Duplicate schema changes (ALTER TABLE run twice = error or data loss)
+  #   2. Lock contention (two migrations fighting for the same table lock)
+  #   3. Race conditions in data seeding
+  parallelism: 1
+
+  # backoffLimit: how many times to retry before the Job is marked Failed.
+  # 3 retries is a reasonable default. For migrations:
+  #   - If the DB is temporarily unavailable, a retry will succeed.
+  #   - If the migration itself is broken, retries won't help — alert and fix.
+  # Each retry has an exponentially increasing delay (10s, 20s, 40s).
+  backoffLimit: 3
+
+  # activeDeadlineSeconds: the Job is killed after this many seconds, regardless of
+  # retry count. Migrations should be fast — 5 minutes is generous for most schema changes.
+  # If your migration takes longer, either:
+  #   a) Increase this value with justification
+  #   b) Break the migration into smaller, faster steps (online schema change pattern)
+  # This prevents a hanging migration from blocking a deployment pipeline indefinitely.
+  activeDeadlineSeconds: 300
+
+  # ttlSecondsAfterFinished: auto-delete the Job and its pods after this duration.
+  # 86400 = 24 hours — enough time for the on-call team to inspect logs after a failure.
+  # The TTL clock starts from when the Job reaches a terminal state (Complete or Failed).
+  # Set to 0 for immediate cleanup (but you lose log access).
+  ttlSecondsAfterFinished: 86400
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-migration
+        app.kubernetes.io/instance: db-migration
+        app.kubernetes.io/component: migration
+        app.kubernetes.io/part-of: kube-platform
+      annotations:
+        kubernetes.io/description: "Database migration pod"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+
+      # restartPolicy: Never means on any failure, a new pod is created (up to backoffLimit).
+      # The failed pod is preserved so you can inspect its logs with 'kubectl logs <pod>'.
+      # Never is preferred over OnFailure for migrations because:
+      #   1. A new pod starts with a completely clean environment (no stale state from previous attempt)
+      #   2. Failed pods are preserved for debugging
+      #   3. Each attempt is fully logged separately
+      restartPolicy: Never
+
+      containers:
+      - name: db-migration
+        # In production, this would be your application's migration image:
+        # e.g., myapp:v2.3.1 with 'migrate' as the command, or
+        # ghcr.io/golang-migrate/migrate for Go projects,
+        # or your own image containing Flyway/Liquibase.
+        # busybox is used here to simulate the pattern.
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e  # Exit immediately on any error (critical for migrations!)
+          set -u  # Treat unset variables as errors
+
+          echo "=== Database Migration Started ==="
+          echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Pod: ${POD_NAME}"
+          echo "Namespace: ${POD_NAMESPACE}"
+
+          # Step 1: Wait for the database to be reachable.
+          # In production, replace this with an actual connectivity check:
+          # until mysql -h "${DB_HOST}" -u root -p"${DB_PASSWORD}" -e "SELECT 1" 2>/dev/null; do
+          echo "Checking database connectivity..."
+          echo "[SIMULATED] Database is reachable."
+
+          # Step 2: Run migrations in order.
+          # Production pattern using a migration tool:
+          # migrate -path /app/migrations -database "${DATABASE_URL}" up
+          echo "Running migration 001_create_users_table.sql..."
+          echo "[SIMULATED] CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY, ...);"
+
+          echo "Running migration 002_add_email_index.sql..."
+          echo "[SIMULATED] CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);"
+
+          echo "Running migration 003_add_created_at.sql..."
+          echo "[SIMULATED] ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;"
+
+          # Step 3: Verify the migration completed successfully.
+          echo "Verifying schema version..."
+          echo "[SIMULATED] Schema is at version 003 — migration complete."
+
+          echo "=== Database Migration Completed Successfully ==="
+          echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            # CPU limit is acceptable for batch Jobs — throttling a migration is
+            # less harmful than throttling a live serving workload.
+            cpu: "200m"
+
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        # In production, database credentials would come from a Secret:
+        # - name: DB_HOST
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: db-config
+        #       key: DB_HOST
+        # - name: DB_PASSWORD
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: db-secret
+        #       key: DB_PASSWORD
+
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp   # Migration tools often need to write temp files
+
+      volumes:
+      - name: tmp
+        emptyDir: {}
