@@ -1,0 +1,82 @@
+# ==============================================================================
+# ROLE — app-role (Namespaced)
+# ==============================================================================
+# A Role grants permissions ONLY within the namespace it is created in (workloads).
+# It cannot grant access to cluster-scoped resources (nodes, PVs, namespaces).
+# Use ClusterRole for cluster-scoped resources (see cluster-role.yml).
+#
+# This Role follows the principle of least privilege:
+#   - Pods: read-only (get, list, watch) — for self-discovery and health monitoring
+#   - ConfigMaps: get only — read application configuration
+#   - Secrets: get only — scoped to ONLY "app-secret" via resourceNames
+#
+# The resourceNames field on the secrets rule is critical security hygiene.
+# Without resourceNames, "get secrets" would allow reading EVERY secret in
+# the namespace, including other applications' credentials.
+#
+# Apply:
+#   kubectl apply -f namespace-role.yml
+#
+# Bind with:
+#   kubectl apply -f rolebinding.yml
+#
+# Verify:
+#   kubectl describe role app-role -n workloads
+#   kubectl auth can-i get secrets/app-secret -n workloads \
+#     --as=system:serviceaccount:workloads:app-service-account
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-role
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: app-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: app-platform
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      Namespaced Role for the app workload. Grants read-only access to pods and
+      a specific ConfigMap, plus get access to a single named secret (app-secret).
+      Binds to app-service-account via app-rolebinding.
+rules:
+  # ---------------------------------------------------------------------------
+  # Pods — read-only access
+  # Required for applications that use the Downward API, query their own pod
+  # spec, or implement leader election via pod label inspection.
+  # apiGroups: [""] means the core API group (v1 resources: pods, services, etc.)
+  # ---------------------------------------------------------------------------
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+  # ---------------------------------------------------------------------------
+  # ConfigMaps — get only
+  # Applications often read ConfigMaps at startup for configuration.
+  # "get" (by name) is sufficient; "list" and "watch" are not needed unless
+  # the application implements config hot-reloading via the watch API.
+  # ---------------------------------------------------------------------------
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+
+  # ---------------------------------------------------------------------------
+  # Secrets — get only, scoped to a specific named secret
+  #
+  # resourceNames scopes secret access to only the specific secret this app needs.
+  # Without resourceNames, "get secrets" grants read access to ALL secrets in
+  # the namespace — including other applications' database passwords, API keys, etc.
+  #
+  # Always use resourceNames for secrets in production RBAC configurations.
+  # This is a defense-in-depth measure: even if the application's service account
+  # token is compromised, the attacker can only read this one named secret.
+  # ---------------------------------------------------------------------------
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    # Comment: resourceNames scopes secret access to only the specific secret this app needs
+    resourceNames:
+      - app-secret  # Only this exact secret name is accessible
