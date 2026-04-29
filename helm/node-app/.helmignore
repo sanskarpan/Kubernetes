@@ -1,0 +1,36 @@
+# Patterns to ignore when building packages.
+
+# Version control
+.git
+.gitignore
+.gitmodules
+.gitattributes
+
+# Helm artefacts
+.helmignore
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing and CI
+.circleci/
+.github/
+.travis.yml
+.gitlab-ci.yml
+
+# Documentation
+docs/
+
+# Node.js
+node_modules/
+npm-debug.log
+.npm/

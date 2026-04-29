@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "node-app.fullname" . }}-test-connection
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "node-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    kubernetes.io/description: "Helm test pod — verifies HTTP connectivity to the Node.js service."
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534   # nobody
+    seccompProfile:
+      type: RuntimeDefault
+
+  restartPolicy: Never
+
+  containers:
+    - name: wget
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      command:
+        - wget
+        - --spider
+        - --server-response
+        - --tries=3
+        - --timeout=10
+        # Test the service endpoint. The service maps port {{ .Values.service.port }}
+        # to the container's port {{ .Values.service.targetPort }} (named "node-app").
+        - "http://{{ include "node-app.fullname" . }}:{{ .Values.service.port }}/"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 16Mi

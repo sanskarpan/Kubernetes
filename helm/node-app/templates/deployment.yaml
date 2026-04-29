@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "node-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "node-app.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: "Node.js application deployment managed by Helm."
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+
+  selector:
+    matchLabels:
+      {{- include "node-app.selectorLabels" . | nindent 6 }}
+
+  strategy:
+    type: {{ .Values.strategy.type }}
+    {{- if eq .Values.strategy.type "RollingUpdate" }}
+    rollingUpdate:
+      # maxUnavailable: 0 — zero-downtime guarantee (new pod must be Ready first)
+      maxUnavailable: {{ .Values.strategy.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ .Values.strategy.rollingUpdate.maxSurge }}
+    {{- end }}
+
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  minReadySeconds: {{ .Values.minReadySeconds }}
+
+  template:
+    metadata:
+      labels:
+        {{- include "node-app.selectorLabels" . | nindent 8 }}
+        {{- include "node-app.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "node-app.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+
+      containers:
+        - name: node-app
+          image: {{ include "node-app.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+
+          ports:
+            - name: node-app           # Named port — matches probe and service targetPort
+              # The Node.js application listens on port 8000 (targetPort from service values).
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+
+          # preStop hook — drain in-flight requests before SIGTERM.
+          # The 5-second sleep allows kube-proxy to propagate endpoint removal
+          # before the process stops, preventing 502 errors during rolling updates.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          {{- with .Values.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+          # Environment variables — prefer ConfigMaps and Secrets over hardcoding.
+          # env:
+          #   - name: NODE_ENV
+          #     value: "production"
+          #   - name: PORT
+          #     value: {{ .Values.service.targetPort | quote }}
+          #   - name: DB_PASSWORD
+          #     valueFrom:
+          #       secretKeyRef:
+          #         name: my-secret
+          #         key: db-password
+
+      {{- with .Values.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,23 @@
+apiVersion: v2
+name: node-app
+description: Node.js application Helm chart for Kubernetes
+type: application
+version: 0.2.0
+appVersion: "latest"
+
+keywords:
+  - nodejs
+  - node
+  - javascript
+  - web
+
+home: https://nodejs.org/
+sources:
+  - https://github.com/trainwithshubham/node-app-test-new
+
+maintainers:
+  - name: kube-platform
+    email: platform@example.com
+
+annotations:
+  category: Application

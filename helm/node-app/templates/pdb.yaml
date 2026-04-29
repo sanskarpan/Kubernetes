@@ -1,0 +1,19 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "node-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "node-app.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: >-
+      PodDisruptionBudget for the Node.js application. Ensures at least
+      {{ .Values.podDisruptionBudget.minAvailable }} pod(s) remain available
+      during voluntary disruptions such as node drains and cluster upgrades.
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "node-app.selectorLabels" . | nindent 6 }}
+{{- end }}
