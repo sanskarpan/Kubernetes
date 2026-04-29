@@ -1,0 +1,136 @@
+# ==============================================================================
+# Block Cloud Metadata API Access
+# ==============================================================================
+# EC2 / GCP / Azure metadata APIs are accessible by default from every pod.
+# Pods can steal node IAM credentials through these APIs.
+# This policy blocks that critical attack vector.
+#
+# BACKGROUND — WHY THIS IS CRITICAL:
+# ───────────────────────────────────
+# Cloud providers expose instance metadata at the link-local IP 169.254.169.254.
+# This API is reachable from every VM (node) and from every pod running on that
+# node. It provides:
+#
+#   AWS:   http://169.254.169.254/latest/meta-data/iam/security-credentials/<role>
+#          Returns temporary AWS access keys for the node's IAM instance profile.
+#
+#   GCP:   http://169.254.169.254/computeMetadata/v1/instance/service-accounts/
+#          Returns OAuth tokens for the node's GCP service account.
+#
+#   Azure: http://169.254.169.254/metadata/identity/oauth2/token
+#          Returns tokens for the node's managed identity.
+#
+# ATTACK SCENARIO (Server-Side Request Forgery / SSRF):
+#   1. Attacker finds an SSRF vulnerability in your web application.
+#   2. Attacker crafts a request that causes the app pod to fetch:
+#        http://169.254.169.254/latest/meta-data/iam/security-credentials/my-node-role
+#   3. The app pod receives temporary AWS credentials for the node's IAM role.
+#   4. Attacker uses those credentials to access S3 buckets, RDS, Secrets Manager,
+#      or pivot to other AWS services — all with the node's permissions.
+#
+#   This is exactly how the 2019 Capital One breach occurred (via an SSRF in
+#   a WAF running on EC2). Credentials from the EC2 metadata API were used to
+#   exfiltrate over 100 million customer records from S3.
+#
+# MITIGATIONS (use all three for defense in depth):
+#   1. IMDSv2 (Token-required mode): Requires a PUT request to get a session
+#      token before metadata can be fetched. Mitigates simple SSRF (HTTP GET).
+#      Enable in Terraform: metadata_options { http_tokens = "required" }
+#      Does NOT protect if the SSRF can make arbitrary HTTP requests (PUT + GET).
+#
+#   2. This NetworkPolicy: Blocks TCP/UDP to 169.254.169.254 at the kernel
+#      network level regardless of IMDSv2. Even if IMDSv2 is misconfigured
+#      or disabled, pods cannot reach the metadata API.
+#
+#   3. Least-privilege node IAM roles: Minimise the blast radius if credentials
+#      are stolen. Node roles should NOT have S3 full access, Admin, or other
+#      broad permissions. Use pod-level IAM via IRSA (AWS), Workload Identity
+#      (GCP), or AAD Pod Identity (Azure) instead of node-level roles.
+#
+# APPLYING:
+#   Apply to every application namespace. Do NOT apply to kube-system or
+#   namespaces running the cloud controller manager — those system components
+#   legitimately need to reach the metadata API for cloud integration.
+#
+#   kubectl apply -f block-metadata-api.yml -n workloads
+#   kubectl apply -f block-metadata-api.yml -n application
+#   kubectl apply -f block-metadata-api.yml -n staging
+#   # etc. for every tenant/workload namespace.
+#
+# VERIFY IT WORKS:
+#   kubectl exec -n workloads deploy/any-app -- \
+#     curl -s --max-time 5 http://169.254.169.254/latest/meta-data/
+#   # Expected output: nothing (connection times out or is refused)
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: block-cloud-metadata
+  namespace: workloads         # Apply to every application/workload namespace.
+                               # Do NOT apply to kube-system.
+
+  labels:
+    app.kubernetes.io/name: block-cloud-metadata
+    app.kubernetes.io/instance: block-cloud-metadata
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Blocks all pod egress to 169.254.169.254/32 (the cloud instance metadata
+      API endpoint used by AWS, GCP, and Azure). Prevents compromised pods from
+      stealing node IAM credentials via SSRF or direct access. Apply to all
+      workload namespaces. Do not apply to kube-system.
+
+spec:
+  # podSelector: {} applies this policy to ALL pods in the namespace.
+  # If you only want to block specific pods (e.g., untrusted user workloads),
+  # use a label selector here. But in most cases, ALL pods should be blocked
+  # from the metadata API — legitimate metadata access should use pod-level
+  # identity (IRSA, Workload Identity) rather than the node metadata API.
+  podSelector: {}
+
+  policyTypes:
+    - Egress    # We are restricting outbound connections from pods.
+
+  egress:
+    # ALLOW: DNS egress — pods must still be able to resolve DNS.
+    # If you have a separate allow-dns policy in this namespace, you can
+    # omit this block here. Include it if this is the only egress policy.
+    - to:
+        - namespaceSelector: {}   # Any namespace (to reach kube-dns in kube-system)
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # ALLOW: All other egress EXCEPT to the metadata API.
+    # By allowing all non-metadata destinations and denying only the metadata
+    # IP, this policy is additive — it can coexist with other egress policies.
+    #
+    # Strategy: Allow traffic to all IPs EXCEPT 169.254.169.254/32.
+    # The ipBlock "except" field achieves this — allow 0.0.0.0/0, except the
+    # metadata API address.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0          # Allow all IPv4 destinations...
+            except:
+              - 169.254.169.254/32   # ...EXCEPT the cloud metadata API.
+                                     # This is a /32 (single host) because the
+                                     # metadata API is always exactly this one IP
+                                     # across AWS, GCP, and Azure.
+
+    # IPv6 metadata endpoint (if your cluster runs dual-stack)
+    # GCP uses fd00:ec2::254 for IPv6 metadata. AWS uses the same link-local.
+    # - to:
+    #     - ipBlock:
+    #         cidr: ::/0
+    #         except:
+    #           - fd00:ec2::254/128
+
+    # Note: This policy does NOT block access to the metadata API via the
+    # node's primary IP (some CNI plugins route link-local traffic differently).
+    # IMDSv2 enforcement at the cloud level is an additional required safeguard.
