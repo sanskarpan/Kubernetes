@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: easyshop
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: easyshop
+data:
+  redis.conf: |
+    # Memory management
+    maxmemory 128mb
+    maxmemory-policy allkeys-lru
+
+    # Persistence (disabled for cache use-case)
+    save ""
+    appendonly no
+
+    # Connection settings
+    timeout 300
+    tcp-keepalive 60
+
+    # Disable dangerous commands in production
+    rename-command FLUSHALL ""
+    rename-command FLUSHDB  ""
+    rename-command DEBUG    ""
+    rename-command CONFIG   ""
