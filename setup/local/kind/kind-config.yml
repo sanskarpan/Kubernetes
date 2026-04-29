@@ -1,0 +1,113 @@
+---
+# KIND cluster configuration
+# API reference: https://kind.sigs.k8s.io/docs/user/configuration/
+#
+# Topology: 1 control-plane node + 2 worker nodes
+# Kubernetes version: v1.32.0 (kindest/node:v1.32.0)
+# Cluster name: kube-platform (set with --name flag, not in this file)
+#
+# Port mappings:
+#   HTTP  -> localhost:8080  (for Ingress / NodePort services)
+#   HTTPS -> localhost:8443  (for TLS Ingress)
+#
+# Usage:
+#   kind create cluster --name kube-platform --config kind-config.yml --wait 120s
+
+apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+
+# ---- Networking --------------------------------------------------------------
+networking:
+  # Pod CIDR (must not overlap with host network)
+  podSubnet: "10.244.0.0/16"
+  # Service CIDR
+  serviceSubnet: "10.96.0.0/12"
+  # Disable default CNI so we can install Calico or Flannel manually (optional)
+  # Set to true to use KIND's default (kindnet)
+  disableDefaultCNI: false
+  # kube-proxy mode: iptables or ipvs
+  kubeProxyMode: "iptables"
+
+# ---- Nodes -------------------------------------------------------------------
+nodes:
+
+  # --------------------------------------------------------------------------
+  # Control-plane node
+  # --------------------------------------------------------------------------
+  - role: control-plane
+    image: kindest/node:v1.32.0
+
+    # Ingress port mappings — map host ports to the container's ports
+    # These must match the Ingress controller's NodePort or hostPort
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8080
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      # NodePort range for manual testing
+      - containerPort: 30000
+        hostPort: 30000
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 30001
+        hostPort: 30001
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+
+    # kubeadm config patches — customize control-plane components
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+
+    # Host path mounts (persistent data that survives pod restarts within the cluster)
+    extraMounts:
+      - hostPath: /tmp/kube-platform-data
+        containerPath: /data
+        readOnly: false
+        selinuxRelabel: false
+        propagation: HostToContainer
+
+  # --------------------------------------------------------------------------
+  # Worker node 1
+  # --------------------------------------------------------------------------
+  - role: worker
+    image: kindest/node:v1.32.0
+
+    extraMounts:
+      - hostPath: /tmp/kube-platform-data
+        containerPath: /data
+        readOnly: false
+        selinuxRelabel: false
+        propagation: HostToContainer
+
+  # --------------------------------------------------------------------------
+  # Worker node 2
+  # --------------------------------------------------------------------------
+  - role: worker
+    image: kindest/node:v1.32.0
+
+    extraMounts:
+      - hostPath: /tmp/kube-platform-data
+        containerPath: /data
+        readOnly: false
+        selinuxRelabel: false
+        propagation: HostToContainer
+
+# ---- Feature Gates -----------------------------------------------------------
+# Enable additional feature gates if needed for testing
+# featureGates:
+#   "TopologyAwareHints": true
+
+# ---- Containerd config patches -----------------------------------------------
+# Uncomment to configure containerd, e.g. for insecure registries
+# containerdConfigPatches:
+#   - |-
+#     [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
+#       endpoint = ["http://registry:5000"]
