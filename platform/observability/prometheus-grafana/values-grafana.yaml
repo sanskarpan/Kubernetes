@@ -1,0 +1,164 @@
+# ==============================================================================
+# kube-prometheus-stack — Grafana-Specific Values Override
+# ==============================================================================
+# This file contains Grafana configuration separated from the main
+# values-prometheus.yaml for clarity and independent management.
+#
+# Grafana is configured with:
+#   - Persistent storage for dashboards and settings
+#   - Prometheus datasource (auto-configured by the chart)
+#   - Additional datasources can be added below
+#   - Dashboard sidecar for auto-loading ConfigMap-based dashboards
+#   - Production-ready ini settings (anonymous auth disabled, SMTP, etc.)
+#
+# IMPORTANT: Change adminPassword before deploying to any shared environment.
+# Use a sealed secret or Vault injection for production credentials.
+# ==============================================================================
+grafana:
+  # ---------------------------------------------------------------------------
+  # Admin credentials
+  # CHANGE THIS in production — use a Sealed Secret or external secret manager.
+  # Override at install time: --set grafana.adminPassword=<your-password>
+  # ---------------------------------------------------------------------------
+  adminPassword: "change-me-in-production"  # CHANGE THIS
+
+  # ---------------------------------------------------------------------------
+  # Persistent storage for Grafana (dashboards, settings, plugins)
+  # Without persistence, custom dashboards are lost on pod restart.
+  # ---------------------------------------------------------------------------
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: standard  # Replace with your StorageClass
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+
+  # ---------------------------------------------------------------------------
+  # Grafana.ini — main Grafana configuration
+  # ---------------------------------------------------------------------------
+  grafana.ini:
+    server:
+      root_url: "%(protocol)s://%(domain)s/"  # Update with your actual URL for OIDC
+      domain: "grafana.example.com"           # Update with your domain
+
+    # Disable anonymous access — all users must authenticate
+    auth.anonymous:
+      enabled: false
+
+    # Disable basic auth (optional — enable for simple setups, disable when using OIDC)
+    auth.basic:
+      enabled: true
+
+    # OIDC authentication (uncomment and configure for production)
+    # auth.generic_oauth:
+    #   enabled: true
+    #   name: "Company SSO"
+    #   allow_sign_up: true
+    #   client_id: "grafana"
+    #   client_secret: "${OAUTH_CLIENT_SECRET}"
+    #   scopes: "openid profile email groups"
+    #   auth_url: "https://dex.example.com/auth"
+    #   token_url: "https://dex.example.com/token"
+    #   api_url: "https://dex.example.com/userinfo"
+    #   role_attribute_path: "contains(groups[*], 'platform-team') && 'Admin' || 'Viewer'"
+
+    # Security settings
+    security:
+      admin_user: admin
+      cookie_secure: true        # Set to true when using HTTPS
+      cookie_samesite: lax
+      allow_embedding: false     # Prevent clickjacking
+
+    # Feature toggles
+    feature_toggles:
+      enable: publicDashboards   # Allow creating public (unauthenticated) dashboard links
+
+    # Disable Grafana telemetry
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+
+  # ---------------------------------------------------------------------------
+  # Additional datasources
+  # The Prometheus datasource is auto-configured by kube-prometheus-stack.
+  # Add additional datasources here (Loki, Tempo, CloudWatch, etc.)
+  # ---------------------------------------------------------------------------
+  additionalDataSources:
+    # Loki datasource (uncomment if Loki is installed)
+    # - name: Loki
+    #   type: loki
+    #   url: http://loki.monitoring.svc.cluster.local:3100
+    #   access: proxy
+    #   isDefault: false
+
+    # Tempo datasource for distributed tracing (uncomment if Tempo is installed)
+    # - name: Tempo
+    #   type: tempo
+    #   url: http://tempo.monitoring.svc.cluster.local:3200
+    #   access: proxy
+    #   jsonData:
+    #     tracesToLogs:
+    #       datasourceUid: loki
+
+  # ---------------------------------------------------------------------------
+  # Dashboard sidecar — automatically loads dashboards from ConfigMaps
+  # labeled with grafana_dashboard: "1" in any namespace.
+  # ---------------------------------------------------------------------------
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL       # Search all namespaces for ConfigMaps
+      folderAnnotation: grafana_folder
+      provider:
+        allowUiUpdates: false    # Prevent UI edits from overwriting ConfigMap-based dashboards
+
+    datasources:
+      enabled: true
+      label: grafana_datasource
+      labelValue: "1"
+      searchNamespace: ALL
+
+  # ---------------------------------------------------------------------------
+  # Pre-installed plugins
+  # Install plugins here rather than at runtime to ensure reproducible deployments.
+  # ---------------------------------------------------------------------------
+  plugins:
+    - grafana-piechart-panel
+    - grafana-clock-panel
+
+  # ---------------------------------------------------------------------------
+  # Resources for Grafana
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+  # ---------------------------------------------------------------------------
+  # ServiceMonitor for Grafana itself
+  # Allows Prometheus to scrape Grafana's own metrics.
+  # ---------------------------------------------------------------------------
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+
+  # ---------------------------------------------------------------------------
+  # Ingress (optional — uncomment for production)
+  # ---------------------------------------------------------------------------
+  # ingress:
+  #   enabled: true
+  #   ingressClassName: nginx
+  #   annotations:
+  #     cert-manager.io/cluster-issuer: letsencrypt-prod
+  #     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  #   hosts:
+  #     - grafana.example.com
+  #   tls:
+  #     - secretName: grafana-tls
+  #       hosts:
+  #         - grafana.example.com
