@@ -97,119 +97,119 @@ spec:
       # Tolerations allow the DaemonSet to be scheduled on nodes that have matching taints.
       # Without these tolerations, the pods would not be scheduled on control-plane nodes.
       tolerations:
-      # Tolerate the control-plane taint so the log collector runs on control-plane nodes too.
-      # This is necessary for complete log coverage (e.g., kube-apiserver audit logs, etcd logs).
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
-        effect: NoSchedule
-      # Also tolerate the 'master' taint for compatibility with older Kubernetes versions
-      # that used 'master' instead of 'control-plane'.
-      - key: node-role.kubernetes.io/master
-        operator: Exists
-        effect: NoSchedule
-      # Tolerate nodes that are not yet ready — ensures the log collector starts collecting
-      # immediately when a node joins, before it is fully Ready. Useful for capturing
-      # startup logs and node initialization events.
-      - key: node.kubernetes.io/not-ready
-        operator: Exists
-        effect: NoSchedule
-      - key: node.kubernetes.io/unreachable
-        operator: Exists
-        effect: NoSchedule
+        # Tolerate the control-plane taint so the log collector runs on control-plane nodes too.
+        # This is necessary for complete log coverage (e.g., kube-apiserver audit logs, etcd logs).
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        # Also tolerate the 'master' taint for compatibility with older Kubernetes versions
+        # that used 'master' instead of 'control-plane'.
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+        # Tolerate nodes that are not yet ready — ensures the log collector starts collecting
+        # immediately when a node joins, before it is fully Ready. Useful for capturing
+        # startup logs and node initialization events.
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoSchedule
 
       containers:
-      - name: log-collector
-        # In production, replace busybox with Fluent Bit (fluent/fluent-bit),
-        # Filebeat (docker.elastic.co/beats/filebeat), or Fluentd (fluent/fluentd).
-        # busybox is used here to demonstrate the DaemonSet pattern without
-        # requiring external image pulls or complex configuration.
-        image: busybox:1.36
-        imagePullPolicy: IfNotPresent
+        - name: log-collector
+          # In production, replace busybox with Fluent Bit (fluent/fluent-bit),
+          # Filebeat (docker.elastic.co/beats/filebeat), or Fluentd (fluent/fluentd).
+          # busybox is used here to demonstrate the DaemonSet pattern without
+          # requiring external image pulls or complex configuration.
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
 
-        command:
-        - /bin/sh
-        - -c
-        - |
-          echo "Log collector starting on node: ${NODE_NAME}"
-          echo "Watching /var/log/host for new log files..."
-          # In production, this would be replaced by the log collector's entrypoint.
-          # For demonstration: tail all log files and echo to stdout.
-          # The kubelet captures stdout and makes it available via 'kubectl logs'.
-          while true; do
-            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [log-collector] Heartbeat — node=${NODE_NAME}"
-            # A real log collector (Fluent Bit) would:
-            # 1. Watch /var/log/host/containers/*.log for container logs
-            # 2. Parse, enrich (add node name, namespace, pod name labels)
-            # 3. Forward to Elasticsearch, Loki, CloudWatch, etc.
-            sleep 30
-          done
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Log collector starting on node: ${NODE_NAME}"
+              echo "Watching /var/log/host for new log files..."
+              # In production, this would be replaced by the log collector's entrypoint.
+              # For demonstration: tail all log files and echo to stdout.
+              # The kubelet captures stdout and makes it available via 'kubectl logs'.
+              while true; do
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [log-collector] Heartbeat — node=${NODE_NAME}"
+                # A real log collector (Fluent Bit) would:
+                # 1. Watch /var/log/host/containers/*.log for container logs
+                # 2. Parse, enrich (add node name, namespace, pod name labels)
+                # 3. Forward to Elasticsearch, Loki, CloudWatch, etc.
+                sleep 30
+              done
 
-        securityContext:
-          allowPrivilegeEscalation: false
-          # readOnlyRootFilesystem: true is safe here because the log collector
-          # only reads from hostPath volumes, not the container's own filesystem.
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            # readOnlyRootFilesystem: true is safe here because the log collector
+            # only reads from hostPath volumes, not the container's own filesystem.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
 
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "100m"
-          limits:
-            memory: "128Mi"
-            # CPU limit is set here because log collectors should be 'best effort'
-            # for CPU — they should not starve application pods on busy nodes.
-            # If the log collector gets CPU-throttled under load, logs may be delayed
-            # but this is preferable to impacting application latency.
-            cpu: "200m"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              # CPU limit is set here because log collectors should be 'best effort'
+              # for CPU — they should not starve application pods on busy nodes.
+              # If the log collector gets CPU-throttled under load, logs may be delayed
+              # but this is preferable to impacting application latency.
+              cpu: "200m"
 
-        env:
-        # Expose the node name to the container via the Downward API.
-        # This allows the log collector to label logs with the source node name —
-        # critical for log routing and filtering in multi-node clusters.
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-        # Similarly expose pod name and namespace for self-identification in logs.
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: POD_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
+          env:
+            # Expose the node name to the container via the Downward API.
+            # This allows the log collector to label logs with the source node name —
+            # critical for log routing and filtering in multi-node clusters.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Similarly expose pod name and namespace for self-identification in logs.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
 
-        volumeMounts:
-        - name: varlog
-          mountPath: /var/log/host   # Mount host logs at a distinct path to avoid confusion
-          readOnly: true             # Log collectors need READ access only — never write to host logs
-        - name: varlibdockercontainers
-          mountPath: /var/lib/docker/containers
-          readOnly: true             # Container log files in JSON format (Docker/containerd runtime)
-        - name: tmp
-          mountPath: /tmp            # Writable temp space for the collector's own use
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log/host   # Mount host logs at a distinct path to avoid confusion
+              readOnly: true             # Log collectors need READ access only — never write to host logs
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true             # Container log files in JSON format (Docker/containerd runtime)
+            - name: tmp
+              mountPath: /tmp            # Writable temp space for the collector's own use
 
       volumes:
-      # hostPath mounts a directory from the HOST NODE's filesystem into the pod.
-      # This is how the log collector accesses logs written by other pods and the OS.
-      # Security note: This gives the container visibility into host filesystem paths.
-      # Always use readOnly: true in the volumeMount when write access is not required.
-      - name: varlog
-        hostPath:
-          path: /var/log
-          # 'Directory' type ensures the path must already exist on the host.
-          # If the path doesn't exist, the pod will fail with a clear error.
-          # Other types: File, Socket, CharDevice, BlockDevice, DirectoryOrCreate, FileOrCreate
-          type: Directory
+        # hostPath mounts a directory from the HOST NODE's filesystem into the pod.
+        # This is how the log collector accesses logs written by other pods and the OS.
+        # Security note: This gives the container visibility into host filesystem paths.
+        # Always use readOnly: true in the volumeMount when write access is not required.
+        - name: varlog
+          hostPath:
+            path: /var/log
+            # 'Directory' type ensures the path must already exist on the host.
+            # If the path doesn't exist, the pod will fail with a clear error.
+            # Other types: File, Socket, CharDevice, BlockDevice, DirectoryOrCreate, FileOrCreate
+            type: Directory
 
-      - name: varlibdockercontainers
-        hostPath:
-          path: /var/lib/docker/containers
-          type: DirectoryOrCreate    # Creates the directory if it doesn't exist (for non-Docker runtimes)
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+            type: DirectoryOrCreate    # Creates the directory if it doesn't exist (for non-Docker runtimes)
 
-      # emptyDir for the collector's own temporary buffer files.
-      - name: tmp
-        emptyDir: {}
+        # emptyDir for the collector's own temporary buffer files.
+        - name: tmp
+          emptyDir: {}

@@ -39,10 +39,10 @@ spec:
     app.kubernetes.io/instance: mysql
 
   ports:
-  - name: mysql
-    port: 3306
-    targetPort: 3306
-    protocol: TCP
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+      protocol: TCP
 
   # sessionAffinity: ClientIP makes kube-proxy route all requests from the same client IP
   # to the same backend pod. Useful for connection pooling — ensures a client's persistent
