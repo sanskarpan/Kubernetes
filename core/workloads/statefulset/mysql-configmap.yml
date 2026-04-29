@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+  namespace: database
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql
+    app.kubernetes.io/version: "8.0"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Non-sensitive MySQL 8.0 configuration — character sets, connection limits, and database name"
+data:
+  # The name of the default database to create on first startup.
+  MYSQL_DATABASE: appdb
+
+  # YAML BOOLEAN HAZARD: In YAML, bare values like 'yes', 'no', 'true', 'false', 'on', 'off'
+  # are parsed as booleans, not strings. Numbers are parsed as integers.
+  # When used as environment variables, Kubernetes converts ConfigMap values to strings,
+  # but some YAML parsers (e.g., Helm templating, kustomize overlays) may misinterpret
+  # unquoted numeric values. Always quote numeric and boolean-looking values in ConfigMaps
+  # to prevent silent type coercion bugs that are extremely hard to debug.
+  MYSQL_MAX_CONNECTIONS: "100"   # Quoted string — prevents YAML integer parsing
+
+  # utf8mb4 is the correct character set for full Unicode support (including 4-byte chars
+  # like emoji). The older 'utf8' in MySQL is actually utf8mb3 and cannot store characters
+  # outside the Basic Multilingual Plane. Always use utf8mb4 for new databases.
+  MYSQL_CHARACTER_SET_SERVER: utf8mb4
+
+  # utf8mb4_unicode_ci provides case-insensitive, accent-insensitive collation based on
+  # the Unicode standard. Use utf8mb4_0900_ai_ci for MySQL 8.0+ (faster, more correct),
+  # but unicode_ci is more portable across MySQL versions.
+  MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+
+  # InnoDB buffer pool size — the most important MySQL performance knob.
+  # Rule of thumb: 70-80% of available RAM for a dedicated DB server.
+  # In a container, this must align with the container's memory limit.
+  # Set to ~60% of the container's memory limit (512Mi) to leave headroom for
+  # connections, sort buffers, and OS page cache.
+  INNODB_BUFFER_POOL_SIZE: "314572800"   # 300Mi in bytes — quoted to prevent integer overflow in some YAML parsers
+
+  # Bind address — '0.0.0.0' allows connections from all interfaces inside the pod.
+  # MySQL will still only be reachable via the Kubernetes Service, which enforces
+  # NetworkPolicy-level isolation. This is safe in a pod-isolated environment.
+  MYSQL_BIND_ADDRESS: "0.0.0.0"
