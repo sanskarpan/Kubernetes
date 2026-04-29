@@ -51,7 +51,7 @@ jobs:
             ! -path './.git/*' \
             ! -path './.github/*' \
           | sort \
-          | xargs yamllint \
+          | xargs -r yamllint \
               --strict \
               -d '{
                 extends: default,
