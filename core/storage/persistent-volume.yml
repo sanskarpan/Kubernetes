@@ -1,0 +1,122 @@
+# ==============================================================================
+# PersistentVolume — Local Node Storage (Static Provisioning)
+# ==============================================================================
+# A PersistentVolume (PV) is a cluster-scoped resource representing a piece of
+# actual storage. This PV uses hostPath to expose a directory on the local node.
+#
+# IMPORTANT — HOSTPATH IS FOR DEVELOPMENT ONLY:
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ DO NOT use hostPath for production application data. Reasons:           │
+# │                                                                          │
+# │ 1. Node-local: Data exists ONLY on the specific node. If the pod is    │
+# │    rescheduled to another node, it cannot access its data.              │
+# │                                                                          │
+# │ 2. No redundancy: A node failure means data loss.                       │
+# │                                                                          │
+# │ 3. Security: hostPath gives pods access to the node's filesystem.      │
+# │    A misconfigured or malicious pod can read/write arbitrary host data. │
+# │                                                                          │
+# │ For production, use:                                                    │
+# │   - AWS: ebs.csi.aws.com (block) or efs.csi.aws.com (shared)          │
+# │   - GCP: pd.csi.storage.gke.io (block) or filestore.csi.storage.gke.io│
+# │   - Azure: disk.csi.azure.com (block) or file.csi.azure.com (shared)  │
+# │   - Bare-metal: Rook/Ceph, OpenEBS, Longhorn, or NFS                  │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# BEFORE APPLYING:
+#   Create the directory on the target node:
+#     ssh <node-name>
+#     sudo mkdir -p /data/k8s-pv-1
+#     sudo chmod 755 /data/k8s-pv-1
+#
+# The node name in nodeAffinity.nodeSelectorTerms MUST match an actual node:
+#   kubectl get nodes
+#
+# Apply:
+#   kubectl apply -f persistent-volume.yml
+#   kubectl get pv local-pv-1
+# ==============================================================================
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  # PVs are cluster-scoped — no namespace field.
+  name: local-pv-1
+
+  labels:
+    app.kubernetes.io/name: local-pv-1
+    app.kubernetes.io/instance: local-pv-1
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Local PersistentVolume backed by hostPath /data/k8s-pv-1 on a specific
+      node. For development use only. Data is not replicated. Requires NodeAffinity
+      to pin pods to the node where the data lives. Do not use hostPath in
+      production — use a cloud CSI driver or distributed storage (Rook, Longhorn).
+
+spec:
+  # storageClassName must match the StorageClass name exactly.
+  # This PV will only be bound to PVCs that request the "local-storage" class.
+  storageClassName: local-storage
+
+  # capacity defines the storage available in this PV.
+  # PVCs requesting <= 5Gi with matching access mode and storageClass can bind to this PV.
+  # Note: For hostPath, this is a DECLARATION, not an enforcement. The OS does
+  # not actually limit disk usage to 5Gi. Real enforcement requires quotas
+  # at the filesystem level (e.g., XFS project quotas, ZFS datasets).
+  capacity:
+    storage: 5Gi
+
+  # accessModes: what operations are permitted on this volume.
+  # ReadWriteOncePod (RWOP) is the most restrictive and recommended mode:
+  # Only ONE pod in the entire cluster can mount this volume for read-write.
+  # Available since Kubernetes 1.22 (GA in 1.29 with CSI drivers).
+  #
+  # For local/hostPath volumes, RWOP enforcement depends on the CSI driver
+  # or local-static-provisioner. With the built-in no-provisioner and Kubelet,
+  # RWOP is enforced at the Kubelet level since 1.29.
+  #
+  # If using an older cluster version, use ReadWriteOnce (RWO) instead:
+  #   ReadWriteOnce — one NODE can mount read-write (multiple pods on same node can share)
+  accessModes:
+    - ReadWriteOncePod    # Preferred: one pod only, across the whole cluster.
+
+  # persistentVolumeReclaimPolicy: what happens when the PVC is deleted.
+  # Retain: PV transitions to Released state. Data is preserved on the node.
+  # An admin must manually delete the PV and clean up /data/k8s-pv-1 before
+  # this storage can be reused.
+  persistentVolumeReclaimPolicy: Retain
+
+  # volumeMode: Filesystem means the volume is formatted and mounted as a
+  # filesystem directory. The alternative is Block (raw block device), which
+  # is used by databases (PostgreSQL, MySQL) that manage their own I/O directly.
+  volumeMode: Filesystem
+
+  # local + nodeAffinity is the correct way to define local storage PVs.
+  # This combination replaced the older hostPath approach and is what the
+  # local-static-provisioner creates.
+  #
+  # local.path: the directory on the node's filesystem.
+  # Choose paths under /data, /mnt/disks, etc. — avoid /mnt/data which
+  # is often owned by root and not writable by the pod's non-root user.
+  local:
+    path: /data/k8s-pv-1    # Must exist on the node before applying.
+                             # Create it: sudo mkdir -p /data/k8s-pv-1
+
+  # nodeAffinity is REQUIRED for local volumes.
+  # Without nodeAffinity, the scheduler doesn't know the volume is node-local
+  # and may schedule the pod on a different node where the path doesn't exist.
+  # The PVC will bind to this PV, the pod will be scheduled anywhere, and then
+  # fail to mount because /data/k8s-pv-1 doesn't exist on the scheduled node.
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname   # Built-in node label, always present.
+              operator: In
+              values:
+                - worker-node-1   # CHANGE THIS to the actual node name.
+                                  # kubectl get nodes to find node names.

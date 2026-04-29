@@ -1,0 +1,195 @@
+# ==============================================================================
+# Pod with PersistentVolumeClaim — Persistent Storage Demo
+# ==============================================================================
+# Demonstrates an nginx pod mounting a PVC for persistent content storage.
+#
+# PVC provides persistent storage that survives pod restarts.
+# When this pod is deleted and recreated, the data in /usr/share/nginx/html
+# remains intact in the PVC (and the backing PV on the node's disk).
+#
+# This is in contrast to emptyDir volumes, which are ephemeral and deleted
+# when the pod terminates.
+#
+# PRODUCTION NOTE:
+#   In production, use a Deployment or StatefulSet rather than a bare Pod.
+#   Bare Pods are not rescheduled if a node fails. A Deployment will restart
+#   the pod on another node, but note: with ReadWriteOncePod access mode, the
+#   new pod must be scheduled on the SAME node where the PV lives (enforced by
+#   the nodeAffinity on the PV and WaitForFirstConsumer binding).
+#
+# Apply:
+#   # Ensure the namespace exists first:
+#   kubectl create namespace workloads --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl apply -f persistent-volume-claim.yml
+#   kubectl apply -f pod-with-pvc.yml
+#   kubectl get pod nginx-with-pvc -n workloads
+# ==============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-with-pvc
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: nginx-with-pvc
+    app.kubernetes.io/instance: nginx-with-pvc
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Nginx pod demonstrating PersistentVolumeClaim usage. Mounts the
+      app-data-claim PVC at /usr/share/nginx/html for persistent content
+      storage that survives pod restarts. Uses production-grade security
+      contexts. In production, wrap this in a Deployment for automatic
+      rescheduling on node failure.
+
+spec:
+  # automountServiceAccountToken: false — this pod does not need to call
+  # the Kubernetes API, so we disable the service account token mount.
+  # By default, every pod gets a token mounted at
+  # /var/run/secrets/kubernetes.io/serviceaccount/token. If the pod is
+  # compromised, this token could be used to query the API server.
+  automountServiceAccountToken: false
+
+  # terminationGracePeriodSeconds: 60 gives nginx 60 seconds to finish
+  # serving in-flight requests before SIGKILL is sent. During this window,
+  # nginx handles SIGTERM by stopping acceptance of new connections and
+  # draining existing ones. Adjust based on your longest expected request.
+  terminationGracePeriodSeconds: 60
+
+  securityContext:
+    # runAsNonRoot: true — the container's process must NOT run as UID 0 (root).
+    # If the image entrypoint is root, the pod will fail to start. This prevents
+    # privilege escalation exploits that rely on the process being root.
+    runAsNonRoot: true
+
+    # runAsUser: 1000 — run as a specific non-root UID.
+    # The PVC's mounted directory must be accessible by this UID.
+    # The fsGroup below ensures group ownership is set correctly.
+    runAsUser: 1000
+
+    # fsGroup: 2000 — Kubernetes sets the group ownership of the mounted volume
+    # to this GID and makes it group-writable. This allows the container
+    # (running as UID 1000) to write to the volume (GID 2000).
+    # Without fsGroup, the volume may be owned by root (UID 0, GID 0) and
+    # the non-root process cannot write to it.
+    fsGroup: 2000
+
+    # seccompProfile: RuntimeDefault applies the container runtime's default
+    # seccomp profile, which blocks dangerous syscalls (e.g., ptrace, mount,
+    # kexec_load). This reduces the attack surface significantly with minimal
+    # application compatibility impact.
+    seccompProfile:
+      type: RuntimeDefault
+
+  containers:
+    - name: nginx
+      # Use a specific digest or tag for reproducibility.
+      # "latest" is non-deterministic and can silently pull a broken image.
+      image: nginx:1.25-alpine   # Alpine-based: smaller image, reduced attack surface.
+
+      ports:
+        - name: http
+          containerPort: 8080    # Running on 8080 (non-privileged port) because
+                                 # the container runs as non-root UID 1000.
+                                 # Ports < 1024 require root or NET_BIND_SERVICE
+                                 # capability. We drop ALL capabilities below.
+
+      securityContext:
+        # allowPrivilegeEscalation: false prevents the process from gaining
+        # more privileges than its parent (e.g., via setuid binaries or sudo).
+        allowPrivilegeEscalation: false
+
+        # readOnlyRootFilesystem: true mounts the container's root filesystem
+        # as read-only. The container cannot modify its own image layers.
+        # This prevents many classes of attacks and makes tampering visible.
+        # Any writes must go to explicitly mounted volumes or emptyDirs.
+        readOnlyRootFilesystem: true
+
+        capabilities:
+          # drop: ALL removes all Linux capabilities from the container.
+          # Default capabilities include chown, setuid, net_bind_service, etc.
+          # A container with no capabilities is significantly hardened.
+          drop: ["ALL"]
+          # add: [] — do not add back any capabilities unless absolutely required.
+          # If the app needs to bind to port 80, add net_bind_service:
+          # add: ["NET_BIND_SERVICE"]
+
+      resources:
+        requests:
+          # requests: the amount Kubernetes reserves on the node for this container.
+          # The scheduler uses requests for placement decisions.
+          memory: "128Mi"
+          cpu: "100m"           # 100 millicores = 0.1 CPU core.
+        limits:
+          # limits: the maximum the container is allowed to use.
+          # Exceeding memory limit → OOMKilled (pod is terminated).
+          # Exceeding CPU limit → throttled (pod is slowed, not terminated).
+          # Set memory limit == request (Guaranteed QoS) for predictable performance.
+          memory: "128Mi"
+          # Note: CPU limits are omitted intentionally by some teams to prevent
+          # unnecessary throttling. If omitted, the container can burst to
+          # available node CPU. For consistent latency, set cpu limits = requests.
+          cpu: "200m"
+
+      volumeMounts:
+        - name: html-content           # Must match the volume name defined below.
+          mountPath: /usr/share/nginx/html  # Default nginx web root.
+                                       # Files here are served over HTTP.
+          readOnly: false              # false because nginx (or a sidecar) needs to
+                                       # write files here. For read-only content
+                                       # (e.g., static files from a ConfigMap),
+                                       # set readOnly: true.
+
+        # nginx needs a writable location for its PID file and cache.
+        # Since readOnlyRootFilesystem: true, we must provide emptyDir volumes
+        # for any paths nginx writes to.
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+          readOnly: false
+
+        - name: nginx-run
+          mountPath: /var/run
+          readOnly: false
+
+      # readinessProbe: determines when the pod is ready to receive traffic.
+      # Until this probe succeeds, the pod is not added to Service Endpoints.
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+
+      # livenessProbe: if this probe fails, the container is restarted.
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 8080
+        initialDelaySeconds: 15
+        periodSeconds: 20
+        failureThreshold: 3
+
+  volumes:
+    # The PVC volume — backed by the PersistentVolumeClaim defined in
+    # persistent-volume-claim.yml. The PVC must exist in the same namespace
+    # as this pod before the pod can start.
+    - name: html-content
+      persistentVolumeClaim:
+        claimName: app-data-claim    # Must match the PVC name exactly.
+        readOnly: false              # Allow the pod to write to the PVC.
+
+    # emptyDir volumes for nginx's runtime scratch space.
+    # emptyDir is ephemeral — created when the pod starts, deleted when it stops.
+    # Unlike PVCs, emptyDir data does NOT survive pod restarts.
+    - name: nginx-cache
+      emptyDir:
+        sizeLimit: 64Mi    # Optional: limit the emptyDir size to prevent disk exhaustion.
+
+    - name: nginx-run
+      emptyDir:
+        sizeLimit: 1Mi
