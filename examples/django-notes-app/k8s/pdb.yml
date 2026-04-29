@@ -1,0 +1,33 @@
+---
+# PodDisruptionBudget for the Notes App
+#
+# Ensures at least 1 pod remains available during:
+#   - Node drains (kubectl drain)
+#   - Cluster upgrades
+#   - Node maintenance
+#
+# Without a PDB, kubectl drain can terminate ALL pods simultaneously,
+# causing a service outage during planned maintenance.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notes-app-pdb
+  namespace: notes-app
+  labels:
+    app.kubernetes.io/name: notes-app
+    app.kubernetes.io/instance: notes-app
+    app.kubernetes.io/component: disruption-budget
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Guarantees at least 1 notes-app pod stays Running during node drains
+      and cluster maintenance operations.
+spec:
+  # minAvailable: keep at least 1 pod running at all times
+  # Alternative: maxUnavailable: 1 (allows 1 pod to be down at a time)
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notes-app
+      app.kubernetes.io/instance: notes-app

@@ -1,0 +1,53 @@
+---
+# Ingress for the Django Notes App
+#
+# Prerequisites:
+#   - NGINX Ingress Controller must be installed
+#   - KIND: kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+#   - Minikube: minikube addons enable ingress
+#   - Production: helm install ingress-nginx ingress-nginx/ingress-nginx
+#
+# Local testing: add to /etc/hosts:
+#   127.0.0.1  notes.example.local
+#
+# Then access: http://notes.example.local:8080 (KIND port mapping)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: notes-app-ingress
+  namespace: notes-app
+  labels:
+    app.kubernetes.io/name: notes-app
+    app.kubernetes.io/instance: notes-app
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Ingress for the Notes application"
+    # Rewrite requests to / when path is /
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Enable GZIP compression
+    nginx.ingress.kubernetes.io/enable-gzip: "true"
+    # Proxy timeout settings for Django
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+spec:
+  # Requires Kubernetes 1.18+ (replaces kubernetes.io/ingress.class annotation)
+  ingressClassName: nginx
+  rules:
+    - host: notes.example.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: notes-app
+                port:
+                  name: http
+  # Uncomment for TLS (requires a TLS secret or cert-manager)
+  # tls:
+  #   - hosts:
+  #       - notes.example.local
+  #     secretName: notes-app-tls
