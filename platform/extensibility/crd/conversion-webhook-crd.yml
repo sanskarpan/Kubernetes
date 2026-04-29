@@ -1,0 +1,192 @@
+# ==============================================================================
+# CRD WITH CONVERSION WEBHOOK — widgets.example.com
+# ==============================================================================
+# CRD conversion webhooks are needed when:
+#   1. You introduce a new stored version (v1) that has a different schema from
+#      an existing stored version (v1alpha1).
+#   2. Objects stored in etcd in the old version need to be served as the new
+#      version (and vice versa) without a full migration.
+#
+# HOW CONVERSION WORKS:
+#   When a client requests a Widget in v1 but the object is stored in v1alpha1:
+#     1. The API server sends a ConversionReview request to the webhook URL.
+#     2. The ConversionReview contains the stored object(s) in their original version.
+#     3. The webhook converts them to the desired version and returns a ConversionReview
+#        response with the converted objects.
+#     4. The API server returns the converted object to the client.
+#
+#   The webhook MUST handle both directions:
+#     - v1alpha1 -> v1 (conversion for clients requesting the new API)
+#     - v1 -> v1alpha1 (conversion for clients requesting the old API)
+#
+# CONVERSIONREVIEW REQUEST FORMAT:
+#   The webhook receives a POST to /convert with body:
+#     apiVersion: apiextensions.k8s.io/v1
+#     kind: ConversionReview
+#     request:
+#       uid: <uuid>
+#       desiredAPIVersion: example.com/v1
+#       objects:
+#         - <stored object in original version>
+#   The webhook responds with:
+#     apiVersion: apiextensions.k8s.io/v1
+#     kind: ConversionReview
+#     response:
+#       uid: <same uuid>
+#       result:
+#         status: Success
+#       convertedObjects:
+#         - <object in desiredAPIVersion>
+#
+# COMPANION FILE:
+#   See conversion-webhook-service.yml in this directory for the Service and
+#   stub Deployment that serve the /convert endpoint.
+#
+# Apply:
+#   kubectl apply -f conversion-webhook-crd.yml
+#   kubectl apply -f conversion-webhook-service.yml
+#
+# Verify:
+#   kubectl get crd widgets.example.com
+#   kubectl explain widget.spec
+# ==============================================================================
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.example.com
+  labels:
+    app.kubernetes.io/name: widgets-crd
+    app.kubernetes.io/instance: widgets-crd
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: extensibility
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      CRD for the Widget resource demonstrating a conversion webhook between
+      v1alpha1 (original schema) and v1 (production schema). The conversion
+      webhook at widget-converter.widget-system handles ConversionReview requests.
+spec:
+  group: example.com
+  scope: Namespaced
+  names:
+    plural: widgets
+    singular: widget
+    kind: Widget
+    listKind: WidgetList
+    shortNames:
+      - wgt
+
+  # ---------------------------------------------------------------------------
+  # Conversion strategy: Webhook
+  # ---------------------------------------------------------------------------
+  # The API server calls the conversion webhook when a client requests a version
+  # that differs from the stored version of the object.
+  #
+  # None: no conversion (only one version can be served at a time — single stored version)
+  # Webhook: call an external webhook to perform the conversion
+  # ---------------------------------------------------------------------------
+  conversion:
+    strategy: Webhook
+    webhook:
+      # conversionReviewVersions: the webhook must support at least one of these.
+      # The API server picks the first version the webhook supports.
+      conversionReviewVersions: ["v1", "v1beta1"]
+
+      clientConfig:
+        # The webhook runs as a Service in the widget-system namespace.
+        # The API server will POST ConversionReview requests to:
+        #   https://widget-converter.widget-system.svc/convert
+        service:
+          name: widget-converter
+          namespace: widget-system
+          path: /convert
+          port: 443
+        # caBundle: The CA certificate used to verify the webhook's TLS cert.
+        # Replace this with the actual CA bundle after deploying the webhook.
+        # You can use cert-manager to inject this automatically using the
+        # cert-manager.io/inject-ca-from annotation on the CRD.
+        caBundle: "" # TODO: inject CA bundle (use cert-manager or set manually)
+
+  # ---------------------------------------------------------------------------
+  # Versions
+  # ---------------------------------------------------------------------------
+  versions:
+    # v1alpha1: original version — simpler schema, stored in etcd initially.
+    # storage: false means new objects are stored as v1 (see below).
+    # served: true means clients can still request v1alpha1 (backward compat).
+    # The conversion webhook converts v1 <-> v1alpha1 on the fly.
+    - name: v1alpha1
+      served: true
+      storage: false # No longer the storage version; v1 is now stored in etcd
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              properties:
+                # v1alpha1 used a single 'config' string field
+                config:
+                  type: string
+                  description: "Raw configuration string (v1alpha1 — use v1 spec.settings instead)"
+                size:
+                  type: string
+                  enum: ["small", "medium", "large"]
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+
+    # v1: production version — richer schema, this is the stored version.
+    # storage: true means all new objects are stored in etcd as v1.
+    # served: true means clients can request v1.
+    - name: v1
+      served: true
+      storage: true # This is the storage version — one version must have this
+      additionalPrinterColumns:
+        - name: Size
+          type: string
+          jsonPath: .spec.size
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: ["size", "replicas"]
+              properties:
+                # v1 replaces the 'config' string with a structured 'settings' map
+                settings:
+                  type: object
+                  description: "Structured settings (replaces v1alpha1 config string)"
+                  x-kubernetes-preserve-unknown-fields: true
+                size:
+                  type: string
+                  enum: ["small", "medium", "large"]
+                replicas:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
