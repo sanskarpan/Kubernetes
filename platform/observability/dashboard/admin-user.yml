@@ -1,0 +1,82 @@
+# ==============================================================================
+# WARNING: FOR LOCAL DEVELOPMENT ONLY
+# ==============================================================================
+# Binding cluster-admin to a ServiceAccount accessible via the Dashboard
+# is a critical security anti-pattern in shared or production clusters.
+# Use OIDC integration for production Dashboard access.
+#
+# This configuration:
+#   1. Creates an admin-user ServiceAccount in the kubernetes-dashboard namespace
+#   2. Binds it to the built-in cluster-admin ClusterRole
+#   3. This gives the token holder UNRESTRICTED access to ALL cluster resources
+#
+# Appropriate environments:
+#   ✅ Local development (minikube, kind, k3d)
+#   ✅ Personal learning clusters
+#   ❌ Shared development environments
+#   ❌ Staging clusters
+#   ❌ Production clusters
+#   ❌ Any cluster accessible from the internet
+#
+# After applying, generate a short-lived access token:
+#   kubectl create token admin-user -n kubernetes-dashboard --duration=1h
+#
+# Apply:
+#   kubectl apply -f admin-user.yml
+# ==============================================================================
+
+# ==============================================================================
+# DOCUMENT 1: ServiceAccount
+# ==============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-user
+  namespace: kubernetes-dashboard
+  labels:
+    app.kubernetes.io/name: admin-user
+    app.kubernetes.io/component: dashboard-access
+    app.kubernetes.io/part-of: kubernetes-dashboard
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: development   # Explicitly mark as development-only
+  annotations:
+    kubernetes.io/description: >
+      Development-only ServiceAccount for Kubernetes Dashboard admin access.
+      Bound to cluster-admin — DO NOT use in production or shared clusters.
+      Use short-lived tokens only: kubectl create token admin-user -n kubernetes-dashboard --duration=1h
+# automountServiceAccountToken: false intentionally NOT set here because the
+# Dashboard needs the token for authentication. In all other cases, set false.
+
+---
+# ==============================================================================
+# DOCUMENT 2: ClusterRoleBinding — admin-user to cluster-admin
+# ==============================================================================
+# WARNING: cluster-admin grants unrestricted access to all resources in all
+# namespaces. This binding makes the Dashboard token equivalent to root access
+# on the entire cluster. Treat the token as you would treat your root credentials.
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-user-dashboard
+  labels:
+    app.kubernetes.io/name: admin-user-dashboard
+    app.kubernetes.io/component: dashboard-access
+    app.kubernetes.io/part-of: kubernetes-dashboard
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: development
+  annotations:
+    kubernetes.io/description: >
+      DEVELOPMENT ONLY. Binds admin-user ServiceAccount to cluster-admin.
+      Provides unrestricted cluster access via Kubernetes Dashboard token.
+      Remove this binding from any non-development cluster.
+subjects:
+  - kind: ServiceAccount
+    name: admin-user
+    namespace: kubernetes-dashboard
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin            # Built-in ClusterRole with full cluster access
+  apiGroup: rbac.authorization.k8s.io
