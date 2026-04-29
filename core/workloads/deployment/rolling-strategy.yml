@@ -1,0 +1,317 @@
+# ==============================================================================
+# rolling-strategy.yml
+# A Deployment that explicitly demonstrates EVERY rolling update configuration
+# field, with detailed inline comments explaining the effect of each setting.
+#
+# This file is a learning reference — each field value is chosen to be obviously
+# illustrative, not necessarily optimal for production.
+#
+# Read this file top-to-bottom; the fields build on each other.
+#
+# Key concepts covered:
+#   - maxSurge          — burst capacity during rollout
+#   - maxUnavailable    — minimum capacity guarantee during rollout
+#   - minReadySeconds   — gate against flaky "Ready" pods
+#   - progressDeadlineSeconds — detect stuck rollouts
+#   - revisionHistoryLimit    — rollback window management
+#
+# Usage:
+#   kubectl apply -f rolling-strategy.yml
+#   kubectl rollout status deployment/rolling-demo -n workloads
+#   kubectl rollout history deployment/rolling-demo -n workloads
+#   # Trigger a rollout by changing the image:
+#   kubectl set image deployment/rolling-demo app=nginx:1.26-alpine -n workloads
+#   kubectl rollout status deployment/rolling-demo -n workloads --watch
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rolling-demo
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: rolling-demo
+    app.kubernetes.io/instance: rolling-demo
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: "Reference deployment demonstrating all rolling update configuration fields"
+
+spec:
+  # ─── REPLICAS ──────────────────────────────────────────────────────────────
+  # Target number of Pod replicas. The rolling update parameters are calculated
+  # relative to this number.
+  # With replicas: 4, maxSurge: 1, maxUnavailable: 0:
+  #   - Peak pods during update: 5 (4 + 1 surge)
+  #   - Minimum pods during update: 4 (0 unavailable)
+  replicas: 4
+
+  # ─── REVISION HISTORY LIMIT ────────────────────────────────────────────────
+  # Kubernetes retains old ReplicaSets (scaled to 0 replicas) for rollback.
+  # Each retained ReplicaSet is stored in etcd and visible in `kubectl get rs`.
+  #
+  # revisionHistoryLimit: 5 means you can roll back to any of the last 5 versions.
+  # Lower = less etcd storage, smaller rollback window.
+  # Higher = more rollback options, more etcd storage.
+  # Default is 10. We use 5 as a balanced production default.
+  #
+  # Effect on rollback:
+  #   kubectl rollout history deployment/rolling-demo
+  #   → shows up to 5 REVISION entries you can undo to
+  revisionHistoryLimit: 5
+
+  # ─── MIN READY SECONDS ─────────────────────────────────────────────────────
+  # After a Pod becomes Ready (passes readinessProbe), the Deployment controller
+  # waits this many additional seconds before considering the Pod "Available"
+  # and proceeding to the next update step.
+  #
+  # Why this matters:
+  #   Without minReadySeconds (default: 0), a Pod that becomes Ready for 1 second
+  #   and then crashes would be counted as a successful update step, and the
+  #   rollout would proceed. minReadySeconds: 10 means the Pod must stay
+  #   continuously Ready for 10 seconds — catching flaps.
+  #
+  # Set this to your application's warm-up time:
+  #   - Static file servers (nginx): 5-10s
+  #   - Java applications with JIT: 30-60s
+  #   - ML model servers loading large models: 120s+
+  #
+  # Effect:
+  #   Each Pod replacement step takes at least minReadySeconds longer.
+  #   Total rollout time ≈ replicas * minReadySeconds (with maxUnavailable:0 and maxSurge:1)
+  minReadySeconds: 10
+
+  # ─── PROGRESS DEADLINE ─────────────────────────────────────────────────────
+  # The Deployment controller expects to make "progress" (create new Pods or
+  # mark new Pods as Available) at least every progressDeadlineSeconds.
+  #
+  # If the rollout stalls for this duration, the Deployment condition:
+  #   type: Progressing
+  #   status: "False"
+  #   reason: "ProgressDeadlineExceeded"
+  # is set on the Deployment object.
+  #
+  # This surfaces in:
+  #   kubectl describe deployment rolling-demo → Conditions section
+  #   kubectl get deployment rolling-demo → READY column shows 0/2
+  #   Prometheus metric: kube_deployment_status_condition
+  #
+  # Common causes of a stuck rollout:
+  #   - readinessProbe is failing on new Pods (wrong path, port, timing)
+  #   - Cluster is out of capacity (new Pods stay Pending)
+  #   - Image pull is failing (ImagePullBackOff)
+  #   - Init containers are hanging
+  #
+  # 600 seconds (10 minutes) is the default and a reasonable production value.
+  # Lower for fast-failing (e.g., 120s for services with quick startups).
+  progressDeadlineSeconds: 600
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rolling-demo
+      app.kubernetes.io/instance: rolling-demo
+
+  # ─── ROLLING UPDATE STRATEGY ───────────────────────────────────────────────
+  strategy:
+    type: RollingUpdate   # The other option is "Recreate" (all-at-once downtime)
+
+    rollingUpdate:
+      # ── maxSurge ───────────────────────────────────────────────────────────
+      # The maximum number of Pods that can be created ABOVE the desired `replicas`
+      # count during a rolling update.
+      #
+      # Can be:
+      #   - Absolute integer: maxSurge: 1  → create at most 1 extra Pod
+      #   - Percentage string: maxSurge: "25%"  → round UP to nearest integer
+      #     With replicas:4 and maxSurge:"25%": 4 * 0.25 = 1 extra Pod
+      #
+      # Effect on rollout:
+      #   maxSurge: 1 → only 1 new Pod is created at a time before removing 1 old Pod.
+      #                 Slowest but uses least extra resources.
+      #   maxSurge: 4 → all 4 new Pods are created first, then all 4 old Pods removed.
+      #                 Fastest but requires 2x the node capacity momentarily.
+      #
+      # Production recommendation: maxSurge: 1 for resource-constrained clusters.
+      # For fast rollouts on well-resourced clusters: maxSurge: "25%"
+      #
+      # Constraint: maxSurge and maxUnavailable cannot BOTH be 0.
+      maxSurge: 1
+
+      # ── maxUnavailable ─────────────────────────────────────────────────────
+      # The maximum number of Pods that can be UNAVAILABLE (not Ready) at any
+      # point during the rolling update.
+      #
+      # Can be absolute or percentage (rounded DOWN).
+      #
+      # Effect:
+      #   maxUnavailable: 0  → No Pod is removed until a new one is Available.
+      #                        Zero-downtime guarantee. Slowest. Requires maxSurge > 0.
+      #   maxUnavailable: 1  → 1 old Pod can be terminated before a new one is Ready.
+      #                        Faster rollout; briefly serves with replicas-1 capacity.
+      #   maxUnavailable: 100% → All old Pods are removed immediately (like Recreate).
+      #
+      # Production recommendation:
+      #   - maxUnavailable: 0 for user-facing services (zero-downtime mandate)
+      #   - maxUnavailable: 1 for background workers where brief under-capacity is ok
+      #   - maxUnavailable: "25%" for large fleets where faster rollouts are prioritized
+      maxUnavailable: 0
+
+      # ── Combined effect of maxSurge:1, maxUnavailable:0 (with replicas:4) ──
+      #
+      # T0: [v1][v1][v1][v1]           (4 pods, 4 available)
+      #
+      # T1: [v1][v1][v1][v1][v2]       (5 pods, 4 available, 1 new starting)
+      #     maxSurge=1: allowed to have 5 total
+      #     Wait for v2 to be Ready AND minReadySeconds to pass...
+      #
+      # T2: [v1][v1][v1]   [v2]        (4 pods, 4 available)
+      #     maxUnavailable=0: ok to remove 1 old since v2 is now Available
+      #
+      # T3: [v1][v1][v1][v2][v2]       (5 pods, 4 available, 1 new starting)
+      #     Next surge: create another v2 pod
+      #     Wait for it to be Available...
+      #
+      # T4: [v1][v1]   [v2][v2]        (4 pods, 4 available)
+      # ...continues until all v1 pods are replaced...
+      # TN: [v2][v2][v2][v2]           (4 pods, 4 available) ROLLOUT COMPLETE
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rolling-demo
+        app.kubernetes.io/instance: rolling-demo
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "rolling-demo web server pod"
+
+    spec:
+      automountServiceAccountToken: false
+
+      # ── terminationGracePeriodSeconds ───────────────────────────────────────
+      # When a Pod is deleted/evicted, kubelet sends SIGTERM to each container.
+      # After terminationGracePeriodSeconds, if the container is still running,
+      # kubelet sends SIGKILL (force kill).
+      #
+      # This value must be GREATER THAN:
+      #   preStop hook duration  +  application shutdown time
+      #
+      # Example: preStop sleep 5s + nginx drain 10s = needs at least 15s grace.
+      # We use 60s as a comfortable buffer.
+      #
+      # If your application needs a longer grace period (e.g., it waits for
+      # in-flight requests to complete), increase this accordingly.
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      volumes:
+      - name: nginx-tmp
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      - name: nginx-cache
+        emptyDir: {}
+
+      containers:
+      - name: app
+        image: nginx:1.25-alpine
+
+        ports:
+        - containerPort: 80
+          protocol: TCP
+          name: http
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+
+        volumeMounts:
+        - name: nginx-tmp
+          mountPath: /tmp
+        - name: nginx-run
+          mountPath: /var/run
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+
+        lifecycle:
+          preStop:
+            exec:
+              # ── preStop hook relationship to rolling update ────────────────
+              # When a Pod is selected for termination during a rolling update:
+              # 1. Pod is removed from Service EndpointSlice (stops receiving new requests)
+              # 2. preStop hook runs (sleep 5s gives LB time to drain existing connections)
+              # 3. SIGTERM is sent to the container
+              # 4. nginx handles SIGTERM with graceful worker shutdown
+              # 5. SIGKILL sent after terminationGracePeriodSeconds if still running
+              #
+              # The 5-second sleep is the "connection drain" window. Without it,
+              # some load balancers (AWS ALB, kube-proxy iptables) may still route
+              # new requests to the Pod for a few seconds after it starts terminating,
+              # causing "connection refused" errors to clients.
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+        # ── Probe relationship to rolling update ────────────────────────────
+        # The readinessProbe is the primary gate for the rolling update:
+        #   - A new Pod must pass readinessProbe to be counted as "Available"
+        #   - Combined with minReadySeconds, this is the "rollout gate"
+        #   - If the probe fails, the rollout stalls (no more old pods removed)
+        #   - `progressDeadlineSeconds` determines when the stall becomes a failure
+        startupProbe:
+          httpGet:
+            path: /
+            port: 80
+          # failureThreshold * periodSeconds = max startup time allowed
+          # 30 * 2s = 60 seconds for nginx to start
+          failureThreshold: 30
+          periodSeconds: 2
+          timeoutSeconds: 3
+
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          # initialDelaySeconds: wait before first probe attempt.
+          # For fast-starting apps, set this low. For slow-starting apps, use
+          # startupProbe instead (which gates readiness/liveness entirely).
+          initialDelaySeconds: 5
+          # periodSeconds: how often to probe.
+          # Lower = faster detection of readiness, more probe traffic.
+          periodSeconds: 10
+          # failureThreshold: how many consecutive failures before marking not-ready.
+          # 3 failures * 10s = 30 seconds of failure before traffic is removed.
+          failureThreshold: 3
+          timeoutSeconds: 3
+
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          # Higher initialDelay than readiness — give the app time to become
+          # ready before we start checking liveness (avoid restart loops).
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
+          timeoutSeconds: 3
