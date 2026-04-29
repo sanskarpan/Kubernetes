@@ -256,6 +256,31 @@ seal-secret: ## Seal a secret: NAME=mysecret NAMESPACE=default VALUE=s3cr3t make
 	@printf "$(GREEN)Sealed secret written to sealed-secrets/$(NAME)-sealed.yaml$(RESET)\n"
 
 # ==============================================================================
+# EASYSHOP EXAMPLE
+# ==============================================================================
+
+.PHONY: apply-easyshop
+apply-easyshop: ## Deploy the EasyShop example (Redis + app) to KIND cluster
+	kubectl apply -f examples/easyshop-kind/
+
+.PHONY: delete-easyshop
+delete-easyshop: ## Remove the EasyShop example
+	kubectl delete -f examples/easyshop-kind/ --ignore-not-found
+
+# ==============================================================================
+# MULTI-TIER EXAMPLE
+# ==============================================================================
+
+.PHONY: apply-multi-tier
+apply-multi-tier: ## Deploy the multi-tier example (frontend + backend + database + cache)
+	kubectl apply -f examples/multi-tier/namespace.yml
+	kubectl apply -f examples/multi-tier/
+
+.PHONY: delete-multi-tier
+delete-multi-tier: ## Remove the multi-tier example
+	kubectl delete -f examples/multi-tier/ --ignore-not-found
+
+# ==============================================================================
 # CLEANUP
 # ==============================================================================
 
