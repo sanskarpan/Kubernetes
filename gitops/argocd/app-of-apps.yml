@@ -1,0 +1,86 @@
+---
+# App-of-Apps Root Application
+# =============================
+# This Application manages all other ArgoCD Applications in this repository.
+# Deploy this single manifest to bootstrap the entire platform:
+#
+#   kubectl apply -f gitops/argocd/app-of-apps.yml -n argocd
+#
+# ArgoCD will then discover and sync all Application manifests under
+# gitops/argocd/apps/ automatically. Adding a new Application manifest to
+# that directory will cause ArgoCD to create it on the next sync.
+#
+# Pattern reference:
+#   https://argo-cd.readthedocs.io/en/stable/operator-manual/cluster-bootstrapping/
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-of-apps
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: app-of-apps
+    app.kubernetes.io/instance: app-of-apps
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: bootstrap
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    kubernetes.io/description: >-
+      Root ArgoCD Application that manages all child Applications in the
+      kube-platform GitOps repository. This is the single bootstrap entry point.
+    # Prevent ArgoCD from deleting this Application if it falls out of sync
+    # (would cause a cascade deletion of all managed applications).
+    argocd.argoproj.io/sync-options: Delete=false
+  # finalizers: [] — Omitting the default finalizer means deleting this
+  # Application will NOT delete child Applications (safer for the root app).
+  # To cascade-delete everything, add:
+  #   finalizers:
+  #     - resources-finalizer.argocd.argoproj.io
+spec:
+  # AppProject — scope this application to the kube-platform project.
+  # Uses 'default' here for bootstrapping; change to 'kube-platform' after
+  # applying app-project.yml.
+  project: default
+
+  source:
+    # Replace with your actual repository URL.
+    repoURL: https://github.com/your-org/your-kubernetes-repo.git
+
+    # Track the main branch. In production, consider pinning to a tag or SHA
+    # for immutable deployments.
+    targetRevision: main
+
+    # Directory containing child Application manifests.
+    # ArgoCD will render all .yml/.yaml files in this directory as manifests.
+    path: gitops/argocd/apps
+
+    # Directory-specific configuration.
+    directory:
+      # Recurse into subdirectories of apps/ if you use sub-folders per team.
+      recurse: true
+
+  destination:
+    # Deploy child Application resources to the ArgoCD namespace of this cluster.
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      # Remove Application resources from the cluster when they are deleted from Git.
+      # Safe here because removing an Application manifest from Git is intentional.
+      prune: true
+
+      # Continuously reconcile — correct any manual changes to Application CRs.
+      selfHeal: true
+
+    syncOptions:
+      # Do not apply individual resource health checks (Applications manage their own).
+      - RespectIgnoreDifferences=true
+
+    # Retry failed syncs with exponential backoff.
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
