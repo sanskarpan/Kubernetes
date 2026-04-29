@@ -1,0 +1,110 @@
+# ==============================================================================
+# POD WITH CUSTOM SECCOMP PROFILE (Localhost type)
+# ==============================================================================
+# Seccomp (Secure Computing Mode) restricts the system calls a container can
+# make to the Linux kernel. The "Localhost" profile type lets you ship a
+# custom JSON profile tuned for your specific workload, rather than using the
+# broader RuntimeDefault profile provided by the container runtime.
+#
+# PROFILE LOCATION ON THE NODE:
+#   The profile file MUST exist on every node that might run this pod at:
+#     /var/lib/kubelet/seccomp/profiles/deny-setuid.json
+#
+#   The path in localhostProfile is RELATIVE to /var/lib/kubelet/seccomp/.
+#   So localhostProfile: "profiles/deny-setuid.json" maps to:
+#     /var/lib/kubelet/seccomp/profiles/deny-setuid.json
+#
+# HOW TO DISTRIBUTE THE PROFILE TO ALL NODES:
+#   Option 1 — DaemonSet (recommended for production):
+#     Deploy a DaemonSet that runs an initContainer to copy the profile JSON
+#     from a ConfigMap to /var/lib/kubelet/seccomp/profiles/ on the host.
+#     See: https://kubernetes.io/docs/tutorials/security/seccomp/
+#
+#   Option 2 — Node provisioning tool:
+#     Include the profile in your node image (Packer, EC2 Launch Template user-data,
+#     GKE node image, AKS custom node image) so it is present before any pod
+#     with this profile can be scheduled.
+#
+#   Option 3 — Security Profile Operator (SPO):
+#     The SPO (https://github.com/kubernetes-sigs/security-profiles-operator) can
+#     distribute seccomp profiles as Kubernetes CRDs and manage their lifecycle.
+#
+# COMPANION PROFILE FILE:
+#   See deny-setuid-profile.json in this directory for the actual seccomp profile.
+#   It allows all syscalls EXCEPT setuid/setgid, which prevents privilege escalation
+#   even if an attacker gains code execution within the container.
+#
+# Apply:
+#   kubectl apply -f seccomp-custom.yml
+#
+# Verify the profile is applied:
+#   kubectl get pod seccomp-custom-pod -o jsonpath='{.spec.securityContext.seccompProfile}'
+#
+# Confirm the pod is running (will fail if profile is not on the node):
+#   kubectl get pod seccomp-custom-pod
+# ==============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seccomp-custom-pod
+  namespace: default
+  labels:
+    app.kubernetes.io/name: seccomp-custom-pod
+    app.kubernetes.io/instance: seccomp-custom-pod
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: demo
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Demonstrates a pod using a custom Localhost seccomp profile that denies
+      setuid/setgid syscalls. The profile must be present on the node at
+      /var/lib/kubelet/seccomp/profiles/deny-setuid.json before the pod can start.
+spec:
+  automountServiceAccountToken: false
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534 # nobody
+    # Localhost: use a custom profile file from the node's seccomp directory.
+    # The path is relative to /var/lib/kubelet/seccomp/ on the node.
+    seccompProfile:
+      type: Localhost
+      localhostProfile: profiles/deny-setuid.json
+
+  containers:
+    - name: app
+      image: nginx:1.25.3
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-run
+          mountPath: /var/run
+        - name: var-cache-nginx
+          mountPath: /var/cache/nginx
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+  volumes:
+    - name: tmp
+      emptyDir: {}
+    - name: var-run
+      emptyDir: {}
+    - name: var-cache-nginx
+      emptyDir: {}
