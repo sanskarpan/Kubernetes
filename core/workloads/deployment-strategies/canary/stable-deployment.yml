@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-stable
+  namespace: canary-demo
+  labels:
+    app.kubernetes.io/name: nginx-canary-demo
+    app.kubernetes.io/instance: nginx-stable
+    app.kubernetes.io/version: "1.24"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+    track: stable
+  annotations:
+    kubernetes.io/description: "Stable v1 deployment (nginx:1.24) — serves 80% of traffic with 4 replicas. The canary deployment serves the remaining 20% with 1 replica."
+spec:
+  # 4 replicas = 4/(4+1) = 80% of traffic when canary has 1 replica.
+  # The traffic split is determined by the ratio of Ready pods across both deployments.
+  replicas: 4
+
+  revisionHistoryLimit: 5
+  minReadySeconds: 10
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-canary-demo
+      app.kubernetes.io/instance: nginx-stable
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx-canary-demo
+        app.kubernetes.io/instance: nginx-stable
+        app.kubernetes.io/version: "1.24"
+        app.kubernetes.io/component: webserver
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+        # THE KEY LABEL FOR CANARY TRAFFIC ROUTING:
+        # The service.yml selects on 'app.kubernetes.io/name: nginx-canary-demo' ONLY.
+        # Both stable (track: stable) and canary (track: canary) pods match this selector.
+        # The service routes traffic to ALL matching pods, splitting by replica count.
+        # The 'track' label is NOT in the service selector — it's for operational filtering.
+        track: stable
+        version: v1
+      annotations:
+        kubernetes.io/description: "Stable v1 pod — receives 80% of traffic"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+      - name: nginx
+        image: nginx:1.24
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        volumeMounts:
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+        - name: tmp
+          mountPath: /tmp
+
+      volumes:
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
