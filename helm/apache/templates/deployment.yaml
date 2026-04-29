@@ -53,7 +53,7 @@ spec:
         # Trigger a rolling restart when the ConfigMap or Secret changes by
         # embedding a checksum annotation. Without this, pods may run stale config.
         # Example (add in a real chart with configmap):
-        # checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # checksum/config: <sha256sum of configmap.yaml — add when a ConfigMap exists in the chart>
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -36,8 +36,7 @@ spec:
   # 'Delete' would destroy your data when the StatefulSet is deleted or scaled down —
   # a catastrophic and irreversible operation.
   persistentVolumeClaimRetentionPolicy:
-    whenDeleted: Retain     # PVCs survive StatefulSet deletion
-    whenScaledDown: Retain  # PVCs survive scale-down (so scaling back up reattaches the same data)
+    whenDeleted: Retain     # PVCs survive StatefulSet deletion (scaling back up reattaches same data)
 
   updateStrategy:
     type: RollingUpdate
@@ -99,214 +98,214 @@ spec:
       # They are ideal for setup tasks: copying config, running migrations, waiting for
       # dependencies. They share the same volumes as the main container.
       initContainers:
-      - name: mysql-init-config
-        # Use the same image as the main container for consistency — avoids tool version mismatches.
-        image: mysql:8.0
-        imagePullPolicy: IfNotPresent
-        command:
-        - /bin/sh
-        - -c
-        - |
-          set -e
-          echo "[mysqld]" > /mnt/mysql-config/my.cnf
-          echo "character-set-server=utf8mb4" >> /mnt/mysql-config/my.cnf
-          echo "collation-server=utf8mb4_unicode_ci" >> /mnt/mysql-config/my.cnf
-          echo "bind-address=0.0.0.0" >> /mnt/mysql-config/my.cnf
-          echo "innodb_buffer_pool_size=314572800" >> /mnt/mysql-config/my.cnf
-          echo "max_connections=100" >> /mnt/mysql-config/my.cnf
-          # Determine this pod's ordinal from its hostname.
-          # The hostname for mysql-1 is 'mysql-1'; the ordinal is the number after the last dash.
-          ORDINAL=$(hostname | awk -F- '{print $NF}')
-          # server-id must be unique per MySQL instance for binary log replication to work.
-          # Using ordinal+1 ensures: mysql-0=1, mysql-1=2, mysql-2=3.
-          # server-id=0 is reserved and disables replication.
-          echo "server-id=$((ORDINAL + 1))" >> /mnt/mysql-config/my.cnf
-          echo "Config written for server-id=$((ORDINAL + 1))"
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
-          runAsNonRoot: true
-          runAsUser: 999
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "64Mi"
-        volumeMounts:
-        - name: mysql-config-volume
-          mountPath: /mnt/mysql-config
-
-      containers:
-      - name: mysql
-        image: mysql:8.0
-        imagePullPolicy: IfNotPresent
-
-        securityContext:
-          allowPrivilegeEscalation: false
-          # NOTE: readOnlyRootFilesystem is intentionally FALSE for MySQL.
-          # MySQL writes to many paths at runtime that cannot be volume-mounted:
-          #   /var/run/mysqld/  — unix socket and PID file
-          #   /tmp/             — sort and temp files (we mount this as emptyDir)
-          #   /etc/             — some configs are written at startup
-          # Setting this to true causes MySQL to fail immediately at startup.
-          # This is a documented exception to the production security standard.
-          # Mitigation: runAsNonRoot + dropped capabilities + seccomp still provide
-          # strong isolation even without a read-only filesystem.
-          readOnlyRootFilesystem: false
-          capabilities:
-            drop: ["ALL"]   # Drop ALL Linux capabilities — MySQL requires none of them
-
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "200m"
-          limits:
-            memory: "512Mi"
-            # No CPU limit intentionally — CPU limits cause throttling via CFS quota,
-            # which can cause latency spikes in database workloads even when nodes have
-            # spare capacity. CPU requests provide scheduling guarantees without throttling.
-            # See: https://www.robustperception.io/cpu-throttling-and-kubernetes
-
-        env:
-        # Load non-sensitive config from ConfigMap
-        - name: MYSQL_DATABASE
-          valueFrom:
-            configMapKeyRef:
-              name: mysql-config
-              key: MYSQL_DATABASE
-        - name: MYSQL_CHARACTER_SET_SERVER
-          valueFrom:
-            configMapKeyRef:
-              name: mysql-config
-              key: MYSQL_CHARACTER_SET_SERVER
-        - name: MYSQL_COLLATION_SERVER
-          valueFrom:
-            configMapKeyRef:
-              name: mysql-config
-              key: MYSQL_COLLATION_SERVER
-
-        # Load sensitive credentials from Secret
-        - name: MYSQL_ROOT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: mysql-secret
-              key: MYSQL_ROOT_PASSWORD
-        - name: MYSQL_USER
-          valueFrom:
-            secretKeyRef:
-              name: mysql-secret
-              key: MYSQL_USER
-        - name: MYSQL_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: mysql-secret
-              key: MYSQL_PASSWORD
-
-        # Point MySQL to use the tmpfs-backed emptyDir for temp files.
-        # This is required because readOnlyRootFilesystem is false but /tmp on the
-        # container's writable layer is not ideal for performance — emptyDir is backed
-        # by the node's disk or memory and is cleaned up when the pod terminates.
-        - name: TMPDIR
-          value: /tmp
-
-        ports:
-        - name: mysql
-          containerPort: 3306
-          protocol: TCP
-
-        volumeMounts:
-        - name: mysql-data
-          mountPath: /var/lib/mysql   # MySQL data directory — backed by PVC
-        - name: mysql-config-volume
-          mountPath: /etc/mysql/conf.d   # Custom config written by init container
-          readOnly: true
-        - name: tmpdir
-          mountPath: /tmp              # tmpfs emptyDir for sort/temp files
-
-        # startupProbe runs FIRST, before liveness and readiness probes.
-        # It gives the container time to initialize before the kubelet starts
-        # checking liveness. MySQL can take several minutes to initialize a fresh
-        # data directory (running mysql_install_db, InnoDB log creation, etc.).
-        # failureThreshold * periodSeconds = 30 * 10 = 300 seconds (5 minutes) max startup time.
-        # Once the startupProbe succeeds, it stops running and liveness takes over.
-        startupProbe:
-          exec:
-            command:
-            - mysqladmin
-            - ping
-            - -h
-            - localhost
-          failureThreshold: 30   # Allow up to 5 minutes for startup
-          periodSeconds: 10
-          timeoutSeconds: 5
-
-        # livenessProbe: if this fails, the kubelet RESTARTS the container.
-        # Use a lightweight check — mysqladmin ping sends a COM_PING packet and
-        # returns immediately. It does NOT run a query, so it works even if the
-        # query engine is overloaded but the server is still running.
-        # Do NOT use a query-based liveness probe — a slow query can cause false
-        # positives and restart cascades under load.
-        livenessProbe:
-          exec:
-            command:
-            - mysqladmin
-            - ping
-            - -h
-            - localhost
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3       # 3 consecutive failures = restart
-          successThreshold: 1
-
-        # readinessProbe: if this fails, the pod is removed from Service endpoints.
-        # Traffic stops being sent to this pod but it is NOT restarted.
-        # This probe verifies the MySQL server can actually execute queries,
-        # not just respond to ping. This prevents routing traffic to a pod that
-        # is starting up (InnoDB recovery) or temporarily overloaded.
-        readinessProbe:
-          exec:
-            command:
+        - name: mysql-init-config
+          # Use the same image as the main container for consistency — avoids tool version mismatches.
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+          command:
             - /bin/sh
             - -c
-            # Use -u root with password from env var. The -e flag executes a query.
-            # SELECT 1 is the canonical "database is alive and responsive" health check.
-            # Note: -p with no space before the password is the correct syntax to avoid
-            # a "Using a password on the command line interface can be insecure" warning
-            # being interpreted as a failure.
-            - "mysql -u root -p\"${MYSQL_ROOT_PASSWORD}\" -e 'SELECT 1' 2>/dev/null"
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
-          successThreshold: 1
+            - |
+              set -e
+              echo "[mysqld]" > /mnt/mysql-config/my.cnf
+              echo "character-set-server=utf8mb4" >> /mnt/mysql-config/my.cnf
+              echo "collation-server=utf8mb4_unicode_ci" >> /mnt/mysql-config/my.cnf
+              echo "bind-address=0.0.0.0" >> /mnt/mysql-config/my.cnf
+              echo "innodb_buffer_pool_size=314572800" >> /mnt/mysql-config/my.cnf
+              echo "max_connections=100" >> /mnt/mysql-config/my.cnf
+              # Determine this pod's ordinal from its hostname.
+              # The hostname for mysql-1 is 'mysql-1'; the ordinal is the number after the last dash.
+              ORDINAL=$(hostname | awk -F- '{print $NF}')
+              # server-id must be unique per MySQL instance for binary log replication to work.
+              # Using ordinal+1 ensures: mysql-0=1, mysql-1=2, mysql-2=3.
+              # server-id=0 is reserved and disables replication.
+              echo "server-id=$((ORDINAL + 1))" >> /mnt/mysql-config/my.cnf
+              echo "Config written for server-id=$((ORDINAL + 1))"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 999
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "64Mi"
+          volumeMounts:
+            - name: mysql-config-volume
+              mountPath: /mnt/mysql-config
 
-        lifecycle:
-          preStop:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            # NOTE: readOnlyRootFilesystem is intentionally FALSE for MySQL.
+            # MySQL writes to many paths at runtime that cannot be volume-mounted:
+            #   /var/run/mysqld/  — unix socket and PID file
+            #   /tmp/             — sort and temp files (we mount this as emptyDir)
+            #   /etc/             — some configs are written at startup
+            # Setting this to true causes MySQL to fail immediately at startup.
+            # This is a documented exception to the production security standard.
+            # Mitigation: runAsNonRoot + dropped capabilities + seccomp still provide
+            # strong isolation even without a read-only filesystem.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]   # Drop ALL Linux capabilities — MySQL requires none of them
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              # No CPU limit intentionally — CPU limits cause throttling via CFS quota,
+              # which can cause latency spikes in database workloads even when nodes have
+              # spare capacity. CPU requests provide scheduling guarantees without throttling.
+              # See: https://www.robustperception.io/cpu-throttling-and-kubernetes
+
+          env:
+            # Load non-sensitive config from ConfigMap
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-config
+                  key: MYSQL_DATABASE
+            - name: MYSQL_CHARACTER_SET_SERVER
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-config
+                  key: MYSQL_CHARACTER_SET_SERVER
+            - name: MYSQL_COLLATION_SERVER
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-config
+                  key: MYSQL_COLLATION_SERVER
+
+            # Load sensitive credentials from Secret
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+
+            # Point MySQL to use the tmpfs-backed emptyDir for temp files.
+            # This is required because readOnlyRootFilesystem is false but /tmp on the
+            # container's writable layer is not ideal for performance — emptyDir is backed
+            # by the node's disk or memory and is cleaned up when the pod terminates.
+            - name: TMPDIR
+              value: /tmp
+
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql   # MySQL data directory — backed by PVC
+            - name: mysql-config-volume
+              mountPath: /etc/mysql/conf.d   # Custom config written by init container
+              readOnly: true
+            - name: tmpdir
+              mountPath: /tmp              # tmpfs emptyDir for sort/temp files
+
+          # startupProbe runs FIRST, before liveness and readiness probes.
+          # It gives the container time to initialize before the kubelet starts
+          # checking liveness. MySQL can take several minutes to initialize a fresh
+          # data directory (running mysql_install_db, InnoDB log creation, etc.).
+          # failureThreshold * periodSeconds = 30 * 10 = 300 seconds (5 minutes) max startup time.
+          # Once the startupProbe succeeds, it stops running and liveness takes over.
+          startupProbe:
             exec:
-              # On SIGTERM, tell MySQL to shut down cleanly before the kubelet sends SIGKILL.
-              # 'mysqladmin shutdown' flushes the InnoDB buffer pool, closes all connections,
-              # and writes the final binary log events. This is far safer than relying on
-              # MySQL's SIGTERM handler alone. The terminationGracePeriodSeconds: 120 gives
-              # this command up to 115 seconds to complete (5 seconds are consumed before
-              # SIGTERM is sent to the process).
               command:
-              - /bin/sh
-              - -c
-              - "mysqladmin -u root -p\"${MYSQL_ROOT_PASSWORD}\" shutdown 2>/dev/null || true"
+                - mysqladmin
+                - ping
+                - -h
+                - localhost
+            failureThreshold: 30   # Allow up to 5 minutes for startup
+            periodSeconds: 10
+            timeoutSeconds: 5
+
+          # livenessProbe: if this fails, the kubelet RESTARTS the container.
+          # Use a lightweight check — mysqladmin ping sends a COM_PING packet and
+          # returns immediately. It does NOT run a query, so it works even if the
+          # query engine is overloaded but the server is still running.
+          # Do NOT use a query-based liveness probe — a slow query can cause false
+          # positives and restart cascades under load.
+          livenessProbe:
+            exec:
+              command:
+                - mysqladmin
+                - ping
+                - -h
+                - localhost
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3       # 3 consecutive failures = restart
+            successThreshold: 1
+
+          # readinessProbe: if this fails, the pod is removed from Service endpoints.
+          # Traffic stops being sent to this pod but it is NOT restarted.
+          # This probe verifies the MySQL server can actually execute queries,
+          # not just respond to ping. This prevents routing traffic to a pod that
+          # is starting up (InnoDB recovery) or temporarily overloaded.
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                # Use -u root with password from env var. The -e flag executes a query.
+                # SELECT 1 is the canonical "database is alive and responsive" health check.
+                # Note: -p with no space before the password is the correct syntax to avoid
+                # a "Using a password on the command line interface can be insecure" warning
+                # being interpreted as a failure.
+                - "mysql -u root -p\"${MYSQL_ROOT_PASSWORD}\" -e 'SELECT 1' 2>/dev/null"
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+
+          lifecycle:
+            preStop:
+              exec:
+                # On SIGTERM, tell MySQL to shut down cleanly before the kubelet sends SIGKILL.
+                # 'mysqladmin shutdown' flushes the InnoDB buffer pool, closes all connections,
+                # and writes the final binary log events. This is far safer than relying on
+                # MySQL's SIGTERM handler alone. The terminationGracePeriodSeconds: 120 gives
+                # this command up to 115 seconds to complete (5 seconds are consumed before
+                # SIGTERM is sent to the process).
+                command:
+                  - /bin/sh
+                  - -c
+                  - "mysqladmin -u root -p\"${MYSQL_ROOT_PASSWORD}\" shutdown 2>/dev/null || true"
 
       volumes:
-      # emptyDir is created fresh for each pod and deleted when the pod terminates.
-      # It lives on the node's disk (or in memory if medium: Memory is set).
-      # Used here for /tmp to give MySQL a writable temp directory without needing
-      # to relax the readOnlyRootFilesystem constraint on /tmp in the container layer.
-      - name: tmpdir
-        emptyDir: {}
-      # Config volume written by init container, read by main container
-      - name: mysql-config-volume
-        emptyDir: {}
+        # emptyDir is created fresh for each pod and deleted when the pod terminates.
+        # It lives on the node's disk (or in memory if medium: Memory is set).
+        # Used here for /tmp to give MySQL a writable temp directory without needing
+        # to relax the readOnlyRootFilesystem constraint on /tmp in the container layer.
+        - name: tmpdir
+          emptyDir: {}
+        # Config volume written by init container, read by main container
+        - name: mysql-config-volume
+          emptyDir: {}
 
   # volumeClaimTemplates act as a PVC factory.
   # For each pod, Kubernetes creates a PVC named: mysql-data-mysql-<ordinal>
@@ -316,20 +315,20 @@ spec:
   # Each pod gets its own isolated storage. This PVC persists across pod restarts
   # and (with Retain policy) across StatefulSet deletion.
   volumeClaimTemplates:
-  - metadata:
-      name: mysql-data
-      labels:
-        app.kubernetes.io/name: mysql
-        app.kubernetes.io/component: database
-        app.kubernetes.io/part-of: kube-platform
-    spec:
-      # ReadWriteOncePod (introduced in Kubernetes 1.22, stable in 1.29) is stricter
-      # than ReadWriteOnce. ReadWriteOnce allows multiple pods on the SAME NODE to mount
-      # the volume — this can cause data corruption if two mysql pods land on the same node.
-      # ReadWriteOncePod guarantees only ONE pod cluster-wide can mount the volume at a time,
-      # regardless of which node it's on.
-      accessModes: ["ReadWriteOncePod"]
-      storageClassName: standard   # Replace with your cluster's storage class (gp3, premium-ssd, etc.)
-      resources:
-        requests:
-          storage: 10Gi
+    - metadata:
+        name: mysql-data
+        labels:
+          app.kubernetes.io/name: mysql
+          app.kubernetes.io/component: database
+          app.kubernetes.io/part-of: kube-platform
+      spec:
+        # ReadWriteOncePod (introduced in Kubernetes 1.22, stable in 1.29) is stricter
+        # than ReadWriteOnce. ReadWriteOnce allows multiple pods on the SAME NODE to mount
+        # the volume — this can cause data corruption if two mysql pods land on the same node.
+        # ReadWriteOncePod guarantees only ONE pod cluster-wide can mount the volume at a time,
+        # regardless of which node it's on.
+        accessModes: ["ReadWriteOncePod"]
+        storageClassName: standard   # Replace with your cluster's storage class (gp3, premium-ssd, etc.)
+        resources:
+          requests:
+            storage: 10Gi

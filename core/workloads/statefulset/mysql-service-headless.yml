@@ -43,10 +43,10 @@ spec:
     app.kubernetes.io/instance: mysql
 
   ports:
-  - name: mysql
-    port: 3306
-    targetPort: 3306
-    protocol: TCP
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+      protocol: TCP
 
   # publishNotReadyAddresses: false (default) means DNS entries are only created
   # for pods that have passed their readiness probe. This prevents replication traffic

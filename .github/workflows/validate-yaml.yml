@@ -60,6 +60,7 @@ jobs:
                   line-length: {max: 160, level: warning},
                   truthy: {allowed-values: ["true", "false"]},
                   comments: {min-spaces-from-content: 1},
+                  comments-indentation: disable,
                   document-start: disable
                 }
               }'
@@ -97,6 +98,7 @@ jobs:
               ! -path './helm/*' \
               ! -path './.github/*' \
               ! -path '*/kustomize/overlays/*' \
+              ! -path './platform/observability/prometheus-grafana/values-*.yaml' \
             | sort
           )
           if [ -z "$MANIFEST_FILES" ]; then

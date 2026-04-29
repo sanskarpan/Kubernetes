@@ -47,51 +47,50 @@ metadata:
     # marked as default per cluster to avoid ambiguity.
     # storageclass.kubernetes.io/is-default-class: "true"
 
-spec:
-  # provisioner: kubernetes.io/no-provisioner disables dynamic provisioning.
-  # When a PVC is created that matches this StorageClass, Kubernetes will
-  # NOT call any provisioner to create a PV. Instead, it waits for a manually
-  # pre-created PV with the matching StorageClass name to become available.
-  provisioner: kubernetes.io/no-provisioner
+# provisioner: kubernetes.io/no-provisioner disables dynamic provisioning.
+# When a PVC is created that matches this StorageClass, Kubernetes will
+# NOT call any provisioner to create a PV. Instead, it waits for a manually
+# pre-created PV with the matching StorageClass name to become available.
+provisioner: kubernetes.io/no-provisioner
 
-  # volumeBindingMode: WaitForFirstConsumer
-  # ─────────────────────────────────────────
-  # This is the CRITICAL setting for local storage.
-  #
-  # WITHOUT this (using Immediate binding, the old default):
-  #   The PVC is immediately bound to the first available matching PV, before
-  #   any pod is scheduled. If the PV's node is different from where the pod
-  #   eventually schedules (due to resource constraints, nodeSelector, etc.),
-  #   the pod CANNOT START — it is stuck waiting for a volume that is on
-  #   the wrong node. This creates a deadlock with no obvious error message.
-  #
-  # WITH WaitForFirstConsumer:
-  #   The PVC remains in Pending state until a pod that references it is
-  #   actually being scheduled. At that point, the scheduler knows which node
-  #   the pod will run on, and THEN binds the PVC to a PV on that specific node.
-  #   This guarantees pod and volume co-location.
-  #
-  # Always use WaitForFirstConsumer for:
-  #   - local-storage (mandatory)
-  #   - topology-aware cloud storage (e.g., EBS in multi-AZ clusters)
-  #   - any storage type that is zone or node-constrained
-  volumeBindingMode: WaitForFirstConsumer
+# volumeBindingMode: WaitForFirstConsumer
+# ─────────────────────────────────────────
+# This is the CRITICAL setting for local storage.
+#
+# WITHOUT this (using Immediate binding, the old default):
+#   The PVC is immediately bound to the first available matching PV, before
+#   any pod is scheduled. If the PV's node is different from where the pod
+#   eventually schedules (due to resource constraints, nodeSelector, etc.),
+#   the pod CANNOT START — it is stuck waiting for a volume that is on
+#   the wrong node. This creates a deadlock with no obvious error message.
+#
+# WITH WaitForFirstConsumer:
+#   The PVC remains in Pending state until a pod that references it is
+#   actually being scheduled. At that point, the scheduler knows which node
+#   the pod will run on, and THEN binds the PVC to a PV on that specific node.
+#   This guarantees pod and volume co-location.
+#
+# Always use WaitForFirstConsumer for:
+#   - local-storage (mandatory)
+#   - topology-aware cloud storage (e.g., EBS in multi-AZ clusters)
+#   - any storage type that is zone or node-constrained
+volumeBindingMode: WaitForFirstConsumer
 
-  # reclaimPolicy: Retain preserves the PV and its data when the PVC is deleted.
-  # This is essential for local development where you want data to persist
-  # between test runs. For local storage, Retain is safer than Delete because
-  # there is no automated cleanup process — data stays on the node's disk.
-  #
-  # After the PVC is deleted, the PV transitions to Released state. To reuse it:
-  #   1. Delete the PV object.
-  #   2. Manually clean up /data/k8s-pv-1 on the node.
-  #   3. Recreate the PV (or apply persistent-volume.yml again).
-  reclaimPolicy: Retain
+# reclaimPolicy: Retain preserves the PV and its data when the PVC is deleted.
+# This is essential for local development where you want data to persist
+# between test runs. For local storage, Retain is safer than Delete because
+# there is no automated cleanup process — data stays on the node's disk.
+#
+# After the PVC is deleted, the PV transitions to Released state. To reuse it:
+#   1. Delete the PV object.
+#   2. Manually clean up /data/k8s-pv-1 on the node.
+#   3. Recreate the PV (or apply persistent-volume.yml again).
+reclaimPolicy: Retain
 
-  # allowVolumeExpansion: true allows PVCs to request more storage after
-  # creation by editing the PVC's spec.resources.requests.storage field.
-  # The underlying storage must support expansion (local hostPath does NOT
-  # support this; cloud block storage generally does). Include it here as a
-  # best practice for StorageClass definitions, even if not currently used.
-  allowVolumeExpansion: false   # hostPath/local volumes do not support expansion.
-                                # Set to true for cloud StorageClasses.
+# allowVolumeExpansion: true allows PVCs to request more storage after
+# creation by editing the PVC's spec.resources.requests.storage field.
+# The underlying storage must support expansion (local hostPath does NOT
+# support this; cloud block storage generally does). Include it here as a
+# best practice for StorageClass definitions, even if not currently used.
+# Set to true for cloud StorageClasses (e.g., EBS, GCE-PD).
+allowVolumeExpansion: false  # hostPath/local volumes do not support expansion.
