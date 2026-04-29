@@ -1,0 +1,138 @@
+# ==============================================================================
+# POD WITH PROJECTED SERVICEACCOUNT TOKEN (short-lived, audience-restricted)
+# ==============================================================================
+# WHY PROJECTED TOKENS ARE BETTER THAN THE OLD STATIC TOKENS:
+#
+# OLD APPROACH (Kubernetes < 1.22, or serviceAccountTokenProjection disabled):
+#   - The controller manager creates a static, never-expiring Secret of type
+#     kubernetes.io/service-account-token and mounts it automatically.
+#   - If the pod is compromised, the attacker holds a valid, permanent credential
+#     that works until an administrator manually rotates it.
+#   - No audience restriction: the token is valid for the Kubernetes API AND any
+#     other service that accepts Kubernetes tokens.
+#
+# PROJECTED TOKEN APPROACH (Kubernetes 1.20+ GA):
+#   - Tokens are issued by the kubelet on demand using the TokenRequest API.
+#   - expirationSeconds: 3600 — the token expires after 1 hour.
+#     The kubelet automatically refreshes the token when it is 80% through its
+#     lifetime, so the file on disk is always valid for at least ~12 minutes.
+#   - audience: "my-api-server" — the token includes an 'aud' claim.
+#     A service that validates this audience will reject tokens not intended for it.
+#     This prevents a stolen token from being replayed against other services.
+#   - automountServiceAccountToken: false prevents the default token Secret from
+#     being mounted in addition to the projected token.
+#
+# HOW KUBELET REFRESHES THE TOKEN:
+#   1. At pod startup, kubelet calls the TokenRequest API and writes the token to
+#      the projected volume path (default: token).
+#   2. Kubelet starts a background goroutine that watches the token's expiry.
+#   3. When the token is 80% through its lifetime (e.g., 48 min into a 60-min
+#      token), kubelet requests a new token and atomically overwrites the file.
+#   4. The application must re-read the token file on each use — do not cache it.
+#      Most client libraries (client-go, boto3) handle this automatically.
+#
+# Apply:
+#   kubectl apply -f projected-token.yml
+#
+# Verify the token is projected:
+#   kubectl exec projected-token-pod -- cat /var/run/secrets/kubernetes.io/serviceaccount/token | \
+#     python3 -c "import sys,base64,json; parts=sys.stdin.read().strip().split('.'); \
+#     print(json.dumps(json.loads(base64.b64decode(parts[1]+'==').decode()),indent=2))"
+# ==============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: projected-token-pod
+  namespace: default
+  labels:
+    app.kubernetes.io/name: projected-token-pod
+    app.kubernetes.io/instance: projected-token-pod
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: demo
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Demonstrates projected ServiceAccount tokens with expiry and audience
+      restriction. The pod disables the default auto-mounted token and manually
+      projects a short-lived token alongside the cluster CA certificate.
+spec:
+  # Disable auto-mounting of the legacy token Secret.
+  # Without this, Kubernetes mounts BOTH the old static token AND the projected
+  # volume — which undermines the security benefit of using projected tokens.
+  automountServiceAccountToken: false
+
+  # Pod-level security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534 # nobody
+    seccompProfile:
+      type: RuntimeDefault
+
+  containers:
+    - name: app
+      image: curlimages/curl:8.6.0
+      command: ["sleep", "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+
+      # Mount the projected volume at the standard serviceaccount path so that
+      # client libraries that look for the token in the default location work
+      # without any configuration changes.
+      volumeMounts:
+        - name: projected-sa-token
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+
+  volumes:
+    - name: projected-sa-token
+      projected:
+        # defaultMode 0444: token and CA cert are world-readable within the pod.
+        # The container already runs as a non-root user, so 0440 is also acceptable.
+        defaultMode: 0444
+        sources:
+          # -----------------------------------------------------------------------
+          # Source 1: Short-lived ServiceAccount token (TokenRequest API)
+          # -----------------------------------------------------------------------
+          # expirationSeconds: token lifetime in seconds.
+          #   Minimum is 600 (10 minutes). Recommended production value: 3600 (1h).
+          #   The kubelet will refresh the token before it expires automatically.
+          #
+          # audience: the 'aud' claim in the JWT.
+          #   Set to the identifier of the service that will validate this token.
+          #   The receiving service MUST check that the audience matches — if not,
+          #   the token would be valid for any service, defeating the purpose.
+          #
+          # path: filename within the mountPath directory.
+          # -----------------------------------------------------------------------
+          - serviceAccountToken:
+              expirationSeconds: 3600
+              audience: "my-api-server"
+              path: token
+
+          # -----------------------------------------------------------------------
+          # Source 2: Cluster CA certificate (from kube-root-ca.crt ConfigMap)
+          # -----------------------------------------------------------------------
+          # The kube-root-ca.crt ConfigMap is automatically created in every
+          # namespace by the kube-controller-manager. It contains the cluster's
+          # root CA certificate in PEM format.
+          #
+          # Applications use this to verify the TLS certificate of the Kubernetes
+          # API server (and any service using a cert signed by the cluster CA).
+          # -----------------------------------------------------------------------
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+                - key: ca.crt
+                  path: ca.crt
