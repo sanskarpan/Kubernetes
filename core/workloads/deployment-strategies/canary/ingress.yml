@@ -1,0 +1,147 @@
+# NGINX Ingress Canary Approach — Alternative to Replica Ratio
+#
+# This file demonstrates the NGINX Ingress Controller's canary annotation feature,
+# which provides PRECISE percentage-based traffic splitting independent of replica count.
+#
+# PREREQUISITES:
+# 1. NGINX Ingress Controller must be installed:
+#    helm install ingress-nginx ingress-nginx/ingress-nginx
+# 2. The stable service (nginx-canary-demo) and canary service (nginx-canary) must exist.
+#    This requires two separate Services — one per deployment.
+#
+# HOW IT WORKS:
+# You create TWO Ingress resources for the SAME host and path:
+#   1. A primary (stable) Ingress — normal, no canary annotations
+#   2. A canary Ingress — annotated with canary=true and a weight or header rule
+# The NGINX Ingress Controller merges these and applies the routing rule.
+#
+# Apply with: kubectl apply -f ingress.yml
+# Toggle canary weight: kubectl annotate ingress nginx-canary-ingress \
+#   nginx.ingress.kubernetes.io/canary-weight="10" --overwrite -n canary-demo
+---
+# Service for canary pods only — needed for the ingress to route specifically to canary.
+# The service.yml in this directory selects BOTH stable and canary (for replica-ratio split).
+# This separate service selects ONLY canary pods (for ingress annotation split).
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-canary-only
+  namespace: canary-demo
+  labels:
+    app.kubernetes.io/name: nginx-canary-demo
+    app.kubernetes.io/instance: nginx-canary-only
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Service for canary pods only — used by the canary Ingress for precise percentage routing"
+spec:
+  type: ClusterIP
+  selector:
+    # Select ONLY canary pods by using the track label
+    app.kubernetes.io/name: nginx-canary-demo
+    track: canary   # Only matches canary deployment pods (track: canary)
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+---
+# Primary (stable) Ingress — routes the majority of traffic to the stable service.
+# This is the baseline Ingress that exists even without a canary.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-stable-ingress
+  namespace: canary-demo
+  labels:
+    app.kubernetes.io/name: nginx-canary-demo
+    app.kubernetes.io/instance: nginx-stable-ingress
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Primary (stable) Ingress for canary demo — routes traffic to stable v1 service"
+    # Specify which ingress controller handles this Ingress.
+    # Required when multiple ingress controllers are installed.
+    kubernetes.io/ingress.class: nginx
+    # Enable SSL redirect in production:
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: nginx-canary-demo.example.com   # Replace with your actual domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            # Points to the combined service (stable + canary pods) for baseline traffic.
+            # The canary Ingress will intercept its percentage before routing to this service.
+            name: nginx-canary-demo
+            port:
+              number: 80
+---
+# Canary Ingress — routes a precise percentage of traffic to the canary service.
+# NGINX Ingress Controller evaluates canary annotations and splits traffic before
+# forwarding to either the stable or canary backend.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-canary-ingress
+  namespace: canary-demo
+  labels:
+    app.kubernetes.io/name: nginx-canary-demo
+    app.kubernetes.io/instance: nginx-canary-ingress
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Canary Ingress for canary demo — routes 20% of traffic to canary v2 service via NGINX annotation"
+    kubernetes.io/ingress.class: nginx
+
+    # CANARY ANNOTATIONS — These tell NGINX Ingress this is a canary route:
+
+    # Mark this Ingress as a canary (required — enables all other canary annotations)
+    nginx.ingress.kubernetes.io/canary: "true"
+
+    # OPTION 1: Weight-based canary (0-100 integer representing percentage)
+    # 20 = 20% of traffic goes to canary service, 80% to stable service.
+    # Change this value to adjust the split:
+    #   5  = 5% canary (early validation)
+    #   20 = 20% canary (broader validation)
+    #   50 = 50% canary (A/B test)
+    #   95 = 95% canary (almost full promotion)
+    nginx.ingress.kubernetes.io/canary-weight: "20"
+
+    # OPTION 2: Header-based canary (mutually exclusive approaches — comment out weight above)
+    # Route requests to canary if the request has this HTTP header set to 'always'.
+    # Other values of the header still go to stable. No header = stable.
+    # Use case: beta users opt in via header; all other users get stable.
+    # nginx.ingress.kubernetes.io/canary-by-header: "X-Canary"
+    # nginx.ingress.kubernetes.io/canary-by-header-value: "true"
+
+    # OPTION 3: Cookie-based canary
+    # Route requests to canary if this cookie is set to 'always'.
+    # Enables sticky canary sessions for logged-in users.
+    # nginx.ingress.kubernetes.io/canary-by-cookie: "canary_user"
+
+    # canary-weight-total: defines the total weight denominator (default 100).
+    # Useful for fine-grained control: set total=1000 and weight=50 for 5% canary.
+    nginx.ingress.kubernetes.io/canary-weight-total: "100"
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: nginx-canary-demo.example.com   # Must match the primary Ingress host exactly
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            # Points to the canary-only service (selects only canary pods)
+            name: nginx-canary-only
+            port:
+              number: 80
