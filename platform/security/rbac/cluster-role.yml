@@ -1,0 +1,100 @@
+# ==============================================================================
+# CLUSTERROLE — cluster-node-reader
+# ==============================================================================
+# ClusterRole needed for resources that are not namespaced: nodes, PVs,
+# StorageClasses, Namespaces, ClusterRoles, and other cluster-scoped objects.
+#
+# A regular Role cannot reference these resources — they exist at the cluster
+# level, not within any namespace. Only a ClusterRole can grant permissions
+# on cluster-scoped resources.
+#
+# This ClusterRole grants READ-ONLY access to:
+#   - nodes        — for monitoring agents to collect node metrics/status
+#   - persistentvolumes — for storage management tools to inventory PVs
+#   - storageclasses    — to check available storage classes
+#
+# Bind this ClusterRole to a subject using:
+#   - ClusterRoleBinding — grants access cluster-wide (all namespaces + cluster resources)
+#   - RoleBinding        — grants access only within a specific namespace
+#                          NOTE: for cluster-scoped resources like nodes and PVs,
+#                          you MUST use ClusterRoleBinding — a RoleBinding of a
+#                          ClusterRole only affects namespaced resources in that namespace.
+#
+# Apply:
+#   kubectl apply -f cluster-role.yml
+#
+# Bind with:
+#   kubectl apply -f cluster-rolebinding.yml
+#
+# Verify:
+#   kubectl describe clusterrole cluster-node-reader
+#   kubectl auth can-i list nodes \
+#     --as=system:serviceaccount:monitoring:monitoring-agent
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # ClusterRole has no namespace field — it is a cluster-scoped resource
+  name: cluster-node-reader
+  labels:
+    app.kubernetes.io/name: cluster-node-reader
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: monitoring-platform
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      ClusterRole granting read-only access to cluster-scoped resources:
+      nodes, PersistentVolumes, and StorageClasses. Intended for monitoring
+      agents (e.g., node-exporter, kube-state-metrics) that need to enumerate
+      cluster-level infrastructure. Bound via cluster-node-reader-binding
+      ClusterRoleBinding to the monitoring-agent ServiceAccount.
+rules:
+  # ---------------------------------------------------------------------------
+  # Nodes — cluster-scoped resource
+  # Monitoring agents need node status, capacity, and allocatable resources.
+  # "get" — retrieve a specific node by name
+  # "list" — list all nodes (needed for initial inventory)
+  # "watch" — receive updates as node status changes (efficient long-polling)
+  #
+  # NOTE: ClusterRole needed for resources that are not namespaced:
+  # nodes, PVs, StorageClasses, Namespaces, ClusterRoles
+  # ---------------------------------------------------------------------------
+  - apiGroups: [""]          # Core API group — nodes are in v1 (core)
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+
+  # Node metrics endpoint — required for monitoring tools that scrape node metrics
+  # via the API server proxy (e.g., cadvisor metrics, node summaries)
+  - apiGroups: [""]
+    resources: ["nodes/metrics", "nodes/stats", "nodes/proxy"]
+    verbs: ["get"]
+
+  # ---------------------------------------------------------------------------
+  # PersistentVolumes — cluster-scoped resource
+  # PVs are not namespaced — they exist at the cluster level even though PVCs
+  # that bind to them are namespaced. Storage management tools need to list PVs
+  # to track capacity and reclaim policy.
+  # ---------------------------------------------------------------------------
+  - apiGroups: [""]          # Core API group — PVs are in v1 (core)
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list"]
+
+  # ---------------------------------------------------------------------------
+  # StorageClasses — cluster-scoped resource (storage.k8s.io/v1)
+  # StorageClasses define the parameters for dynamic volume provisioning.
+  # Monitoring and platform tools need to enumerate available storage classes.
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+
+  # ---------------------------------------------------------------------------
+  # Namespaces — cluster-scoped resource
+  # Allow listing namespaces so monitoring agents can discover all namespaces
+  # and collect metrics across the cluster without needing per-namespace access.
+  # ---------------------------------------------------------------------------
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
