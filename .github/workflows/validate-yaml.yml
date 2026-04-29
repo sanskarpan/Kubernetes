@@ -1,0 +1,172 @@
+---
+name: Validate YAML
+
+on:
+  push:
+    branches: ["main", "master", "develop"]
+  pull_request:
+    branches: ["main", "master", "develop"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KUBERNETES_VERSION: "1.32.0"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Job 1: yamllint — syntax and style check
+  # ----------------------------------------------------------------------------
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-yamllint-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-yamllint-
+            ${{ runner.os }}-pip-
+
+      - name: Install yamllint
+        run: pip install yamllint==1.35.1
+
+      - name: Run yamllint
+        run: |
+          echo "Running yamllint on all YAML files..."
+          find . -type f \( -name '*.yml' -o -name '*.yaml' \) \
+            ! -path './vendor/*' \
+            ! -path './.git/*' \
+            ! -path './.github/*' \
+          | sort \
+          | xargs -r yamllint \
+              --strict \
+              -d '{
+                extends: default,
+                rules: {
+                  line-length: {max: 160, level: warning},
+                  truthy: {allowed-values: ["true", "false"]},
+                  comments: {min-spaces-from-content: 1},
+                  document-start: {present: false}
+                }
+              }'
+
+  # ----------------------------------------------------------------------------
+  # Job 2: kubeconform — Kubernetes schema validation
+  # ----------------------------------------------------------------------------
+  kubeconform:
+    name: kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          KUBECONFORM_VERSION="0.6.7"
+          curl -sSL \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            -o /tmp/kubeconform.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp
+          sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
+          chmod +x /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: Run kubeconform on Kubernetes manifests
+        run: |
+          echo "Validating manifests against Kubernetes ${{ env.KUBERNETES_VERSION }} schema..."
+          FAILED=0
+          MANIFEST_FILES=$(
+            find . -type f \( -name '*.yml' -o -name '*.yaml' \) \
+              ! -path './vendor/*' \
+              ! -path './.git/*' \
+              ! -path './setup/*' \
+              ! -path './helm/*' \
+              ! -path './.github/*' \
+            | sort
+          )
+          if [ -z "$MANIFEST_FILES" ]; then
+            echo "No manifest files found to validate."
+            exit 0
+          fi
+          echo "$MANIFEST_FILES" | xargs kubeconform \
+            -kubernetes-version "${{ env.KUBERNETES_VERSION }}" \
+            -strict \
+            -ignore-missing-schemas \
+            -summary \
+            -output pretty \
+          || FAILED=1
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::kubeconform validation failed. Review the output above."
+            exit 1
+          fi
+
+  # ----------------------------------------------------------------------------
+  # Job 3: helm-lint (quick pass — full lint is in helm-lint.yml)
+  # ----------------------------------------------------------------------------
+  helm-lint:
+    name: helm lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.17.0"
+
+      - name: Lint helm/apache
+        run: |
+          if [ -d "helm/apache" ]; then
+            echo "Linting helm/apache..."
+            helm lint --strict helm/apache/
+          else
+            echo "helm/apache not found, skipping."
+          fi
+
+      - name: Lint helm/node-app
+        run: |
+          if [ -d "helm/node-app" ]; then
+            echo "Linting helm/node-app..."
+            helm lint --strict helm/node-app/
+          else
+            echo "helm/node-app not found, skipping."
+          fi
+
+  # ----------------------------------------------------------------------------
+  # Job 4: Summary — gate that all jobs must pass
+  # ----------------------------------------------------------------------------
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [yamllint, kubeconform, helm-lint]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.yamllint.result }}" != "success" ]]; then
+            echo "::error::yamllint failed"
+            exit 1
+          fi
+          if [[ "${{ needs.kubeconform.result }}" != "success" ]]; then
+            echo "::error::kubeconform failed"
+            exit 1
+          fi
+          if [[ "${{ needs.helm-lint.result }}" != "success" ]]; then
+            echo "::error::helm-lint failed"
+            exit 1
+          fi
+          echo "All CI checks passed."
