@@ -1,0 +1,138 @@
+# ==============================================================================
+# MySQL Isolation NetworkPolicy — Production Database Hardening
+# ==============================================================================
+# Restricts MySQL pods so that:
+#   INGRESS: Only pods in namespaces labeled "environment: production" can
+#            connect to MySQL on port 3306.
+#   EGRESS:  MySQL pods can only make DNS queries (required for hostname
+#            resolution). All other outbound traffic is blocked.
+#
+# WHY THIS MATTERS:
+#   Without this policy, any pod in the cluster — including pods in dev,
+#   staging, or a compromised workload namespace — can connect to MySQL
+#   on port 3306. This policy implements least-privilege network access.
+#
+# SETUP REQUIRED:
+#   Label the namespaces that should have MySQL access:
+#     kubectl label namespace production environment=production
+#     kubectl label namespace app-backend environment=production
+#
+#   Verify:
+#     kubectl get namespace --show-labels | grep environment
+#
+# APPLYING:
+#   kubectl apply -f mysql-isolation.yml -n database
+#
+# TESTING:
+#   # Should succeed (from a pod in a production-labeled namespace):
+#   kubectl exec -n production deploy/app -- \
+#     mysql -h mysql.database.svc.cluster.local -u appuser -p -e "SELECT 1"
+#
+#   # Should be BLOCKED (from a pod in an unlabeled namespace):
+#   kubectl exec -n staging deploy/app -- \
+#     curl -s --max-time 5 telnet://mysql.database.svc.cluster.local:3306
+#   # Expected: connection timeout
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-allow-app-namespace
+  namespace: database            # This policy lives in the database namespace,
+                                 # protecting the MySQL pods that run there.
+
+  labels:
+    app.kubernetes.io/name: mysql-allow-app-namespace
+    app.kubernetes.io/instance: mysql-allow-app-namespace
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Restricts MySQL access to pods in namespaces labeled environment: production
+      only. MySQL pods can only receive connections on port 3306 from production
+      namespaces, and can only send outbound traffic to DNS. All other traffic
+      is blocked. Requires the database namespace to have a default-deny-all
+      NetworkPolicy applied first.
+
+spec:
+  # podSelector targets only the MySQL pods.
+  # Pods without this label are unaffected by this policy.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mysql   # Must match the label on MySQL pods.
+
+  policyTypes:
+    - Ingress    # Control who can connect TO MySQL.
+    - Egress     # Control where MySQL pods can connect TO.
+
+  # ---------------------------------------------------------------------------
+  # Ingress Rules — who can reach MySQL
+  # ---------------------------------------------------------------------------
+  ingress:
+    - from:
+        # Allow connections ONLY from pods in namespaces labeled:
+        #   environment: production
+        #
+        # This is an AND condition because namespaceSelector and podSelector
+        # are in the same list entry (not separate entries).
+        # It means: from pods in production namespaces (any pod in those namespaces).
+        #
+        # To restrict to specific pods within production namespaces, add:
+        #   podSelector:
+        #     matchLabels:
+        #       role: backend
+        - namespaceSelector:
+            matchLabels:
+              environment: production   # The namespace must have this label.
+                                        # Label namespaces with:
+                                        #   kubectl label namespace <ns> environment=production
+
+      ports:
+        - protocol: TCP
+          port: 3306        # MySQL default port.
+                            # If your MySQL uses a non-standard port, change this.
+                            # Named ports can also be used if the MySQL pod spec
+                            # defines a named containerPort.
+
+  # ---------------------------------------------------------------------------
+  # Egress Rules — where MySQL pods can connect
+  # ---------------------------------------------------------------------------
+  egress:
+    # Allow DNS resolution — MySQL needs to resolve hostnames (e.g., for
+    # replication, external auth plugins, or cloud RDS endpoints).
+    # Without this rule, DNS queries from MySQL pods will fail silently,
+    # which can cause cascading failures in replication or health checks.
+    - to:
+        # Allow DNS to any namespace — kube-dns runs in kube-system, but
+        # the namespace selector must be open to reach it because kube-system
+        # may not have a predictable label in all cluster configurations.
+        # For stricter control, label kube-system and restrict to that.
+        - namespaceSelector: {}   # All namespaces (permits reaching kube-system/kube-dns)
+      ports:
+        - protocol: UDP
+          port: 53          # DNS is primarily UDP. Must allow this.
+        - protocol: TCP
+          port: 53          # DNS falls back to TCP for responses >512 bytes
+                            # (e.g., DNSSEC-signed responses). Always allow both.
+
+    # If MySQL needs to replicate to a replica in another namespace:
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           environment: production
+    #       podSelector:
+    #         matchLabels:
+    #           app.kubernetes.io/name: mysql-replica
+    #   ports:
+    #     - protocol: TCP
+    #       port: 3306
+
+    # If MySQL needs to reach an external backup storage endpoint:
+    # - to:
+    #     - ipBlock:
+    #         cidr: 10.0.0.0/8    # Internal storage network
+    #   ports:
+    #     - protocol: TCP
+    #       port: 443
