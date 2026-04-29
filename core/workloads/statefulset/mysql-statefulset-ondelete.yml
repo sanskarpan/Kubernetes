@@ -1,0 +1,290 @@
+# ==============================================================================
+# MySQL StatefulSet — OnDelete Update Strategy
+# ==============================================================================
+# This is a VARIANT of core/workloads/statefulset/mysql-statefulset.yml.
+# Only the updateStrategy section differs from the main StatefulSet.
+# For the full spec (volumes, init containers, probes, resources), refer to
+# mysql-statefulset.yml.
+#
+# WHAT OnDelete MEANS:
+#   With updateStrategy.type: OnDelete, Kubernetes does NOT automatically update
+#   running pods when the StatefulSet's pod template changes. Instead:
+#     - You update the StatefulSet spec (kubectl apply / kubectl edit).
+#     - The new pod template is stored, but ALL existing pods continue running
+#       the OLD template version unchanged.
+#     - A pod receives the new template ONLY when it is MANUALLY DELETED.
+#     - kubectl delete pod mysql-0 → new mysql-0 pod starts with new spec.
+#     - kubectl delete pod mysql-1 → new mysql-1 pod starts with new spec.
+#   This gives you complete manual control over the rollout sequence.
+#
+# WHEN TO USE OnDelete:
+#   1. Manual failover required: databases (MySQL, PostgreSQL) where you must
+#      verify replication health between each pod update.
+#   2. Blue-green StatefulSet upgrades: you want to run the old and new versions
+#      simultaneously (update only some pods), verify, then update the rest.
+#   3. Pinned-version replicas: replicas (mysql-1, mysql-2) may need to stay on
+#      an old version while the primary (mysql-0) is upgraded first.
+#   4. Maintenance windows: you only want pods to update during a scheduled
+#      maintenance window — delete pods manually at the right time.
+#   5. Slow initial sync: after updating mysql-0 (primary), you must wait for
+#      replica mysql-1 to catch up on replication before deleting it. OnDelete
+#      prevents Kubernetes from auto-deleting mysql-1 before replication is ready.
+#
+# HOW TO TRIGGER AN UPDATE WITH OnDelete:
+#   Step 1: Apply the new pod template
+#     kubectl apply -f mysql-statefulset-ondelete.yml
+#     # Kubernetes updates the stored template but does NOT restart any pods.
+#     # All pods still run the old image/config.
+#
+#   Step 2: Verify replication health (MySQL-specific)
+#     kubectl exec -n database mysql-0 -- mysql -uroot -p"${ROOT_PASS}" \
+#       -e "SHOW MASTER STATUS\G"
+#
+#   Step 3: Update primary (mysql-0) first
+#     kubectl delete pod mysql-0 -n database
+#     # mysql-0 restarts with the NEW pod template.
+#     # Wait for mysql-0 to be Running+Ready before proceeding.
+#     kubectl rollout status statefulset/mysql -n database --watch
+#
+#   Step 4: Verify replication is re-established
+#     kubectl exec -n database mysql-1 -- mysql -uroot -p"${ROOT_PASS}" \
+#       -e "SHOW REPLICA STATUS\G" | grep -E "Running|Lag"
+#
+#   Step 5: Update replica (mysql-1)
+#     kubectl delete pod mysql-1 -n database
+#
+#   Step 6: Update final replica (mysql-2)
+#     kubectl delete pod mysql-2 -n database
+#
+#   Step 7: Verify all pods are on the new version
+#     kubectl get pods -n database -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}'
+#
+# ROLLBACK WITH OnDelete:
+#   Since pods are only updated when manually deleted, a rollback is simple:
+#     kubectl apply -f mysql-statefulset-ondelete-old-version.yml  # revert the spec
+#     kubectl delete pod mysql-2 -n database  # pod restarts on old version
+#     # Repeat for mysql-1 and mysql-0 in reverse order
+#
+# COMPARISON TO RollingUpdate:
+#   RollingUpdate (default): Kubernetes automatically updates pods in reverse
+#   ordinal order (mysql-2 → mysql-1 → mysql-0) when the template changes.
+#   The partition field controls which ordinals are eligible for updates.
+#   See mysql-statefulset.yml for the RollingUpdate variant.
+#
+# Apply:
+#   kubectl apply -f mysql-statefulset-ondelete.yml
+#   kubectl get statefulset mysql-ondelete -n database -o jsonpath='{.spec.updateStrategy}'
+# ==============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-ondelete
+  namespace: database
+
+  labels:
+    app.kubernetes.io/name: mysql-ondelete
+    app.kubernetes.io/instance: mysql-ondelete
+    app.kubernetes.io/version: "8.0"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      MySQL 8.0 StatefulSet with OnDelete update strategy for manual rollout
+      control. Pods are only updated when manually deleted — ideal for databases
+      requiring verification of replication health between each pod update.
+      See mysql-statefulset.yml for the full spec; this file documents only the
+      updateStrategy difference.
+
+spec:
+  serviceName: mysql-headless
+
+  replicas: 3
+
+  podManagementPolicy: OrderedReady
+
+  # ── KEY DIFFERENCE FROM mysql-statefulset.yml ─────────────────────────────
+  # updateStrategy.type: OnDelete means:
+  #   - kubectl apply changes the STORED template immediately.
+  #   - No pods are restarted automatically.
+  #   - Each pod is updated only when manually deleted (kubectl delete pod mysql-N).
+  updateStrategy:
+    type: OnDelete
+    # Note: rollingUpdate field is NOT valid with OnDelete.
+    # Omitting it entirely is correct — adding it would cause a validation error.
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql-ondelete
+      app.kubernetes.io/instance: mysql-ondelete
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mysql-ondelete
+        app.kubernetes.io/instance: mysql-ondelete
+        app.kubernetes.io/version: "8.0"
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "MySQL 8.0 OnDelete-strategy database pod"
+        prometheus.io/scrape: "false"
+        prometheus.io/port: "9104"
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+
+      initContainers:
+        - name: mysql-init-config
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "[mysqld]" > /mnt/mysql-config/my.cnf
+              echo "character-set-server=utf8mb4" >> /mnt/mysql-config/my.cnf
+              echo "collation-server=utf8mb4_unicode_ci" >> /mnt/mysql-config/my.cnf
+              ORDINAL=$(hostname | awk -F- '{print $NF}')
+              echo "server-id=$((ORDINAL + 1))" >> /mnt/mysql-config/my.cnf
+              echo "Config written for server-id=$((ORDINAL + 1))"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 999
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "64Mi"
+          volumeMounts:
+            - name: mysql-config-volume
+              mountPath: /mnt/mysql-config
+
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            # NOTE: readOnlyRootFilesystem is false for MySQL — see mysql-statefulset.yml
+            # for the full explanation of this documented exception.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+
+          env:
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-config
+                  key: MYSQL_DATABASE
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+            - name: TMPDIR
+              value: /tmp
+
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+            - name: mysql-config-volume
+              mountPath: /etc/mysql/conf.d
+              readOnly: true
+            - name: tmpdir
+              mountPath: /tmp
+
+          startupProbe:
+            exec:
+              command: [mysqladmin, ping, -h, localhost]
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+
+          livenessProbe:
+            exec:
+              command: [mysqladmin, ping, -h, localhost]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "mysql -u root -p\"${MYSQL_ROOT_PASSWORD}\" -e 'SELECT 1' 2>/dev/null"
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "mysqladmin -u root -p\"${MYSQL_ROOT_PASSWORD}\" shutdown 2>/dev/null || true"
+
+      volumes:
+        - name: tmpdir
+          emptyDir: {}
+        - name: mysql-config-volume
+          emptyDir: {}
+
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+        labels:
+          app.kubernetes.io/name: mysql-ondelete
+          app.kubernetes.io/component: database
+          app.kubernetes.io/part-of: kube-platform
+      spec:
+        accessModes: ["ReadWriteOncePod"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi
