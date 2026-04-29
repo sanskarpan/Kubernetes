@@ -1,0 +1,179 @@
+# ==============================================================================
+# CLUSTERROLE AGGREGATION — platform-viewer
+# ==============================================================================
+# ClusterRole Aggregation lets you compose permissions from multiple ClusterRoles
+# into a single aggregate role without modifying the aggregate role itself.
+#
+# HOW AGGREGATION WORKS:
+#   The Kubernetes controller manager watches for ClusterRoles that match the
+#   aggregationRule.clusterRoleSelectors label selector. At runtime it merges all
+#   matching rules into the aggregate role's effective rule set. The aggregate role
+#   itself has NO rules of its own — it is entirely composed from its components.
+#
+#   This means:
+#     - The aggregate role is updated automatically (no re-apply needed)
+#     - Adding a new component ClusterRole instantly extends the aggregate
+#     - Removing a component ClusterRole instantly retracts those permissions
+#
+# WHEN TO USE AGGREGATION:
+#   - Platform/operator RBAC that must evolve as CRDs are installed
+#     (e.g., a "viewer" role that should automatically gain read access to new
+#     CRDs deployed by Helm charts or operators)
+#   - Separating concerns: each team owns their component ClusterRole; the
+#     aggregate is owned by the platform team
+#   - Avoiding monolithic ClusterRoles that require central modification every
+#     time a new API group is added
+#
+# HOW TO ADD PERMISSIONS WITHOUT MODIFYING THE AGGREGATE ROLE:
+#   Simply create a new ClusterRole with the label
+#   rbac.example.com/aggregate-to-platform-viewer: "true"
+#   The aggregate role will pick it up automatically within seconds.
+#
+#   Example: to grant platform-viewers read access to a new CRD group:
+#     kubectl create clusterrole platform-viewer-widgets \
+#       --verb=get,list,watch \
+#       --resource=widgets.example.com \
+#       --dry-run=client -o yaml | \
+#       kubectl label -f - rbac.example.com/aggregate-to-platform-viewer=true \
+#       --local -o yaml | kubectl apply -f -
+#
+# Apply:
+#   kubectl apply -f cluster-role-aggregation.yml
+#
+# Verify the merged rules:
+#   kubectl describe clusterrole platform-viewer
+#
+# Test a specific permission:
+#   kubectl auth can-i list pods \
+#     --as=system:group:platform-viewers
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # The aggregate role has no rules — it inherits all rules from matching components.
+  name: platform-viewer
+  labels:
+    app.kubernetes.io/name: platform-viewer
+    app.kubernetes.io/instance: platform-viewer
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Aggregate ClusterRole that merges permissions from all ClusterRoles
+      labelled rbac.example.com/aggregate-to-platform-viewer: "true".
+      Rules are updated automatically by the controller manager — no manual
+      re-apply needed when component roles change.
+# aggregationRule instructs the controller manager to merge rules from all
+# ClusterRoles whose labels match any of these selectors.
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.example.com/aggregate-to-platform-viewer: "true"
+# NOTE: Do NOT add a 'rules:' field here. The controller manager manages it.
+rules: []
+
+---
+# ==============================================================================
+# COMPONENT CLUSTERROLE 1 — platform-viewer-core
+# ==============================================================================
+# Grants read-only access to core workload resources: pods and services.
+# Labelled so the aggregate platform-viewer role picks it up automatically.
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-viewer-core
+  labels:
+    app.kubernetes.io/name: platform-viewer-core
+    app.kubernetes.io/instance: platform-viewer-core
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+    # This label is what the aggregate role's selector matches.
+    # Adding this label to any ClusterRole automatically extends platform-viewer.
+    rbac.example.com/aggregate-to-platform-viewer: "true"
+  annotations:
+    kubernetes.io/description: >
+      Component ClusterRole providing read-only access to pods and services.
+      Aggregated into platform-viewer via label selector.
+rules:
+  # Read access to Pods and their sub-resources (logs, status)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["get", "list", "watch"]
+
+  # Read access to Services — necessary to understand how traffic is routed
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ==============================================================================
+# COMPONENT CLUSTERROLE 2 — platform-viewer-apps
+# ==============================================================================
+# Grants read-only access to apps/v1 resources: Deployments and ReplicaSets.
+# Labelled so the aggregate platform-viewer role picks it up automatically.
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-viewer-apps
+  labels:
+    app.kubernetes.io/name: platform-viewer-apps
+    app.kubernetes.io/instance: platform-viewer-apps
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+    # Same aggregation label — this component is also merged into platform-viewer
+    rbac.example.com/aggregate-to-platform-viewer: "true"
+  annotations:
+    kubernetes.io/description: >
+      Component ClusterRole providing read-only access to Deployments and
+      ReplicaSets. Aggregated into platform-viewer via label selector.
+rules:
+  # Read access to Deployments and ReplicaSets
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ==============================================================================
+# CLUSTERROLEBINDING — platform-viewer-binding
+# ==============================================================================
+# Binds the aggregate platform-viewer ClusterRole to the Group 'platform-viewers'.
+# Any user whose kubeconfig token carries this group membership will inherit
+# the merged read-only permissions from all component ClusterRoles.
+#
+# How to assign a user to the 'platform-viewers' group:
+#   - OIDC: include the group in the 'groups' claim in the JWT
+#   - AWS EKS: add the IAM role to the aws-auth ConfigMap with the group
+#   - kubeadm: use --groups flag when creating a CSR for the user
+# ==============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-viewer-binding
+  labels:
+    app.kubernetes.io/name: platform-viewer-binding
+    app.kubernetes.io/instance: platform-viewer-binding
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Binds the aggregate platform-viewer ClusterRole to the platform-viewers
+      Group. Users in this group get read-only access to pods, services,
+      deployments, and replicasets across all namespaces.
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-viewer
+subjects:
+  - kind: Group
+    name: platform-viewers
+    apiGroup: rbac.authorization.k8s.io
