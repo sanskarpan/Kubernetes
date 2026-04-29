@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-rolling
+  namespace: rolling-demo
+  labels:
+    app.kubernetes.io/name: nginx-rolling
+    app.kubernetes.io/instance: nginx-rolling
+    app.kubernetes.io/version: "1.24"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "ClusterIP service for nginx-rolling — during Rolling Update, this service always has healthy endpoints (zero-downtime guarantee with readinessProbe + maxUnavailable:0)"
+spec:
+  type: ClusterIP
+
+  selector:
+    # IMPORTANT: The selector does NOT include a 'version' label.
+    # This means the service selects pods from ALL versions simultaneously during the rollout.
+    # During a rolling update, some pods run nginx:1.24 and some run nginx:1.25,
+    # and the service routes traffic to all of them (all that are Ready).
+    # This is intentional — it means clients seamlessly hit either version during the rollout.
+    # Your application must be able to handle serving from mixed versions gracefully
+    # (i.e., v1 and v2 APIs must be compatible — no breaking changes in a rolling update).
+    app.kubernetes.io/name: nginx-rolling
+    app.kubernetes.io/instance: nginx-rolling
+
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
