@@ -1,0 +1,34 @@
+# ==============================================================================
+# overlays/staging/patch-resources.yaml
+# Strategic merge patch for staging environment resource limits.
+#
+# Staging resources are sized to be representative of production load patterns
+# while remaining within a shared staging cluster's budget.
+#
+# The goal: staging should be large enough to surface OOM issues and CPU
+# contention that would occur in production, without wasting budget on full
+# production-scale resources.
+#
+# Sizing guidelines:
+#   - memory limit: set to the p99 memory usage observed in production + 20% headroom
+#   - cpu request: set to the p50 cpu usage in production
+#   - No cpu limit (avoids throttling at staging load test time)
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  template:
+    spec:
+      containers:
+      - name: nginx
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            # Staging uses the same memory limit as what we target for production.
+            # This ensures load tests surface OOM issues before they hit prod.
+            memory: "256Mi"
+            # No CPU limit — load tests should not be throttled artificially.
