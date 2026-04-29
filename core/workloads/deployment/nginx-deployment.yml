@@ -1,0 +1,373 @@
+# ==============================================================================
+# nginx-deployment.yml
+# Production-grade nginx Deployment with full security hardening, probes,
+# graceful shutdown, and a companion ConfigMap for nginx configuration.
+#
+# This file contains TWO Kubernetes documents (separated by ---):
+#   1. ConfigMap   — nginx.conf injected via volume mount
+#   2. Deployment  — nginx workload referencing the ConfigMap
+#
+# Key production patterns demonstrated:
+#   - ConfigMap-based configuration (change config without rebuilding image)
+#   - Distinct startupProbe, readinessProbe, livenessProbe endpoints
+#   - preStop sleep for zero-downtime rolling updates
+#   - readOnlyRootFilesystem with emptyDir volumes for nginx temp dirs
+#   - All 6 app.kubernetes.io/* labels on every resource
+#   - revisionHistoryLimit: 5 (limit etcd storage for old ReplicaSets)
+#   - minReadySeconds: 10 (avoid declaring a flaky pod as Available)
+#   - RollingUpdate with maxSurge:1, maxUnavailable:0 (zero-downtime)
+#
+# Usage:
+#   kubectl apply -f nginx-deployment.yml
+#   kubectl rollout status deployment/nginx -n workloads
+#   kubectl port-forward svc/nginx-svc 8080:80 -n workloads (if service exists)
+# ==============================================================================
+
+# ─── DOCUMENT 1: ConfigMap ────────────────────────────────────────────────────
+# Storing nginx configuration in a ConfigMap decouples configuration from the
+# container image. You can update nginx config with a ConfigMap change + pod
+# restart, without rebuilding or re-pushing a Docker image.
+#
+# The ConfigMap exposes three endpoints used by the probes:
+#   /healthz  — liveness check (is nginx process alive?)
+#   /ready    — readiness check (is nginx ready to serve traffic?)
+#   /metrics  — placeholder for future Prometheus metrics endpoint
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: "nginx configuration for the nginx production deployment"
+
+data:
+  # The nginx.conf is embedded as a multi-line string value.
+  # It is mounted into the container at /etc/nginx/nginx.conf.
+  nginx.conf: |
+    # Run nginx as a non-daemon process so the container stays alive
+    # as long as the master process is running (PID 1 behavior).
+    daemon off;
+
+    # Number of worker processes. "auto" uses the number of CPU cores.
+    # With resource limits, this is bounded to our CPU quota.
+    worker_processes auto;
+
+    # Write the PID file to /var/run (mounted as emptyDir for write access)
+    pid /var/run/nginx.pid;
+
+    # Write error logs to stderr so the container runtime collects them
+    error_log /dev/stderr warn;
+
+    events {
+      # Maximum number of simultaneous connections per worker.
+      worker_connections 1024;
+    }
+
+    http {
+      # Write access logs to stdout so `kubectl logs` captures them.
+      # In production you might use a structured JSON format for log parsing.
+      access_log /dev/stdout combined;
+
+      # Use the temp directories that are mounted as emptyDir volumes.
+      client_body_temp_path /tmp/client_body;
+      proxy_temp_path        /tmp/proxy;
+      fastcgi_temp_path      /tmp/fastcgi;
+      uwsgi_temp_path        /tmp/uwsgi;
+      scgi_temp_path         /tmp/scgi;
+
+      # Security: remove the nginx version from the Server header.
+      server_tokens off;
+
+      # Standard performance settings
+      sendfile on;
+      tcp_nopush on;
+      tcp_nodelay on;
+      keepalive_timeout 65;
+      types_hash_max_size 2048;
+
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+
+      server {
+        listen 80;
+        server_name _;
+
+        # ── Health Endpoints (distinct for different probe types) ────────────
+        # Using distinct endpoints for startup, readiness, and liveness is a
+        # best practice: each probe can check a different condition.
+
+        # Liveness: Is the nginx process alive? If this fails, nginx has crashed
+        # or is stuck in a bad state. Always returns 200 if nginx is running.
+        location /healthz {
+          access_log off;          # Don't pollute access logs with probe traffic
+          return 200 "OK\n";
+          add_header Content-Type text/plain;
+        }
+
+        # Readiness: Is nginx ready to serve requests? Could check upstream
+        # availability, cache warmup, connection pool status, etc.
+        # Here it's the same as liveness, but in a real app they would differ.
+        location /ready {
+          access_log off;
+          return 200 "READY\n";
+          add_header Content-Type text/plain;
+        }
+
+        # Main application content
+        location / {
+          root /usr/share/nginx/html;
+          index index.html index.htm;
+
+          # Return 404 for missing files rather than directory listings
+          try_files $uri $uri/ =404;
+        }
+      }
+    }
+---
+# ─── DOCUMENT 2: Deployment ───────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: workloads
+
+  # ─── REQUIRED LABELS ──────────────────────────────────────────────────────
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: "Production nginx deployment with full security hardening, probes, and rolling update configuration"
+
+spec:
+  # ─── REPLICA COUNT ─────────────────────────────────────────────────────────
+  replicas: 2
+
+  # ─── REVISION HISTORY ──────────────────────────────────────────────────────
+  # Keep the last 5 old ReplicaSets for rollback purposes. Default is 10.
+  # Each old ReplicaSet is an etcd entry; limiting this reduces etcd bloat.
+  # 5 revisions is usually sufficient for production rollback needs.
+  revisionHistoryLimit: 5
+
+  # ─── MIN READY SECONDS ─────────────────────────────────────────────────────
+  # A new Pod must be Ready for at least 10 seconds before it is considered
+  # "Available" and the rollout can proceed to the next Pod.
+  # This prevents a Pod that crashes immediately after becoming Ready from
+  # being counted as a successful rollout step.
+  minReadySeconds: 10
+
+  # ─── PROGRESS DEADLINE ─────────────────────────────────────────────────────
+  # If the Deployment hasn't made progress (scaled up new pods) within 600
+  # seconds, it is marked as Failed. This is visible in `kubectl describe`
+  # and can be alerted on via DeploymentCondition metrics.
+  progressDeadlineSeconds: 600
+
+  # ─── SELECTOR ──────────────────────────────────────────────────────────────
+  # IMMUTABLE after creation. Must match spec.template.metadata.labels.
+  # The Deployment controller uses this to identify which Pods it owns.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx
+      app.kubernetes.io/instance: nginx
+
+  # ─── UPDATE STRATEGY ───────────────────────────────────────────────────────
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Create 1 extra Pod above `replicas` during the update.
+      # With 2 replicas, at peak there are 3 Pods (2 old + 1 new) briefly.
+      # Higher maxSurge speeds up the rollout but requires more node capacity.
+      maxSurge: 1
+
+      # Never take a Pod below the desired count during the update.
+      # 0 = no capacity loss during the rollout (zero-downtime guarantee).
+      # This is only as good as your readinessProbe — a pod that passes
+      # readiness prematurely can still serve errors.
+      maxUnavailable: 0
+
+  # ─── POD TEMPLATE ──────────────────────────────────────────────────────────
+  template:
+    metadata:
+      # Pod labels MUST include the fields referenced by spec.selector.matchLabels
+      labels:
+        app.kubernetes.io/name: nginx
+        app.kubernetes.io/instance: nginx
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "nginx web server pod"
+
+    spec:
+      # ─── SERVICE ACCOUNT ─────────────────────────────────────────────────
+      automountServiceAccountToken: false
+
+      # ─── GRACEFUL SHUTDOWN ───────────────────────────────────────────────
+      # Must be greater than preStop sleep (5s) + nginx's worker_shutdown_timeout.
+      # 60 seconds is a safe default for nginx.
+      terminationGracePeriodSeconds: 60
+
+      # ─── POD SECURITY CONTEXT ────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ─── TOPOLOGY SPREAD ─────────────────────────────────────────────────
+      # Spread replicas evenly across availability zones.
+      # In production with 2+ replicas, this prevents both replicas landing
+      # on the same node or zone — a zone outage would then still be served.
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: nginx
+
+      # ─── VOLUMES ─────────────────────────────────────────────────────────
+      volumes:
+      # ConfigMap volume: mounts nginx.conf from the ConfigMap defined above.
+      # When the ConfigMap is updated, the mounted file is updated (within
+      # ~60s by default), but nginx won't pick it up until reloaded or restarted.
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+
+      # emptyDir volumes for nginx's writable directories.
+      # Required because readOnlyRootFilesystem: true prevents writes to the
+      # container image's own filesystem.
+      - name: nginx-tmp
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      - name: nginx-cache
+        emptyDir: {}
+
+      containers:
+      - name: nginx
+        # Pin to a specific minor version for production stability.
+        # In a real pipeline, use a digest: nginx@sha256:<digest>
+        image: nginx:1.25-alpine
+
+        ports:
+        - containerPort: 80
+          protocol: TCP
+          name: http
+
+        # ─── CONTAINER SECURITY CONTEXT ──────────────────────────────────
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+
+        # ─── RESOURCE MANAGEMENT ─────────────────────────────────────────
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            # memory limit == request → Guaranteed QoS class
+            # (highest eviction priority; protected from OOM eviction)
+            memory: "128Mi"
+            # CPU limit intentionally omitted to avoid throttling.
+            # nginx CPU usage is bursty; capping it would increase p99 latency.
+
+        # ─── VOLUME MOUNTS ────────────────────────────────────────────────
+        volumeMounts:
+        # Mount the custom nginx.conf from the ConfigMap.
+        # This replaces the default /etc/nginx/nginx.conf inside the container.
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true   # The config should never be modified by the running process
+
+        # Writable directories nginx needs at runtime
+        - name: nginx-tmp
+          mountPath: /tmp
+        - name: nginx-run
+          mountPath: /var/run
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+
+        # ─── LIFECYCLE ────────────────────────────────────────────────────
+        lifecycle:
+          preStop:
+            exec:
+              # Sleep 5s before nginx receives SIGTERM.
+              # This gives kube-proxy and cloud load balancers time to remove
+              # this Pod's IP from their routing tables.
+              # Without this, requests can arrive at a Pod that has already
+              # started shutting down, resulting in connection refused errors.
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+        # ─── PROBES ───────────────────────────────────────────────────────
+        # Three probes serve three different purposes. ALL THREE should point
+        # to DIFFERENT endpoints where possible.
+
+        # startupProbe: Runs FIRST. liveness and readiness probes are DISABLED
+        # until the startup probe succeeds. This prevents premature restarts
+        # during slow application initialization (loading ML models, warming caches).
+        # With failureThreshold: 30 and periodSeconds: 2, the app has up to
+        # 60 seconds to start before being killed.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          # Allow up to 30 * 2 = 60 seconds for nginx to start.
+          failureThreshold: 30
+          periodSeconds: 2
+          timeoutSeconds: 3
+
+        # readinessProbe: Controls Service endpoint inclusion.
+        # Failure removes this Pod from the Service's EndpointSlice → no traffic.
+        # It does NOT restart the container. Use this for transient "not ready"
+        # states (e.g., dependency temporarily unavailable, cache miss rate high).
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+          # After 3 consecutive successes, the probe is considered passing again.
+          successThreshold: 1
+          timeoutSeconds: 3
+
+        # livenessProbe: Restarts the container if it fails.
+        # Use this for detecting deadlocks, hung goroutines, or processes that
+        # appear alive but can no longer handle requests.
+        # Starts ONLY AFTER the startupProbe succeeds.
+        # Use a HIGHER initialDelaySeconds than readinessProbe to avoid
+        # restarting a container that is merely slow to become ready.
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
+          timeoutSeconds: 3
