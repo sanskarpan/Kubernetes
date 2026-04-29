@@ -1,0 +1,208 @@
+# =============================================================================
+# Network Policies — multi-tier namespace
+# =============================================================================
+# Default: deny all ingress and egress. Then add explicit allow rules.
+# This follows the principle of least privilege for network traffic.
+# =============================================================================
+
+---
+# Default deny: block all ingress traffic to all pods in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Default deny: block all egress traffic from all pods in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Allow DNS egress from all pods (required for service discovery).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Allow ingress traffic to frontend from the ingress controller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# Allow ingress to backend from ingress controller and frontend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 3000
+          protocol: TCP
+
+---
+# Allow backend to query the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-to-database
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: database
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - port: 5432
+          protocol: TCP
+
+---
+# Allow backend to connect to the cache.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-to-cache
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cache
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - port: 6379
+          protocol: TCP
+
+---
+# Allow frontend to make egress calls to backend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-egress-to-backend
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - port: 3000
+          protocol: TCP
+
+---
+# Allow backend egress to database and cache.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-egress
+  namespace: multi-tier
+  labels:
+    app.kubernetes.io/part-of: multi-tier
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: database
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cache
+      ports:
+        - port: 6379
+          protocol: TCP
