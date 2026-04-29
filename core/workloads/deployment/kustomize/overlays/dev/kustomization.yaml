@@ -1,0 +1,71 @@
+# ==============================================================================
+# overlays/dev/kustomization.yaml
+# Development environment overlay.
+#
+# Dev environment characteristics:
+#   - Namespace: dev (isolated from staging/prod)
+#   - Replicas: 1 (cost-saving; dev doesn't need HA)
+#   - Image: nginx:latest (use latest for rapid iteration)
+#   - Resources: small limits (dev cluster is shared/small)
+#
+# To preview the final manifests (dry run):
+#   kustomize build core/workloads/deployment/kustomize/overlays/dev
+#
+# To apply to the dev cluster:
+#   kubectl apply -k core/workloads/deployment/kustomize/overlays/dev
+#
+# To diff against what's live in the cluster:
+#   kubectl diff -k core/workloads/deployment/kustomize/overlays/dev
+# ==============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Point to the base manifests directory.
+# All resources defined in the base are inherited by this overlay.
+resources:
+- ../../base
+
+# ─── NAMESPACE ───────────────────────────────────────────────────────────────
+# Kustomize sets this namespace on ALL resources from the base that don't already
+# have a namespace set. This is the primary mechanism for environment separation.
+# Overlays for staging and prod set different namespaces here.
+namespace: dev
+
+# ─── NAME PREFIX / SUFFIX ────────────────────────────────────────────────────
+# Optionally prefix all resource names (e.g., dev-nginx).
+# We skip this here to keep names clean, relying on namespace for isolation.
+# namePrefix: dev-
+
+# ─── REPLICA COUNT ───────────────────────────────────────────────────────────
+# Patch the replica count without a separate patch file.
+# The `replicas` field in kustomization.yaml is the idiomatic way to set replicas.
+replicas:
+- name: nginx       # Must match metadata.name in the base Deployment
+  count: 1
+
+# ─── IMAGE OVERRIDE ──────────────────────────────────────────────────────────
+# Override the container image tag for this environment.
+# `newName` and `newTag` can be set independently.
+# In CI, this is updated by: kustomize edit set image nginx=nginx:latest
+images:
+- name: nginx           # Matches the image name in the base (without tag)
+  newTag: latest        # Dev uses latest for rapid iteration; pin in staging/prod
+
+# ─── PATCHES ─────────────────────────────────────────────────────────────────
+# Strategic merge patches: Kubernetes merges these with the base manifest.
+# A strategic merge patch only overrides the fields it specifies.
+patches:
+- path: patch-resources.yaml
+  target:
+    kind: Deployment
+    name: nginx
+
+# ─── COMMON LABELS ───────────────────────────────────────────────────────────
+# Add environment-specific label to all resources.
+# Useful for cost allocation, environment-specific network policies, etc.
+commonLabels:
+  environment: dev
+
+# ─── COMMON ANNOTATIONS ──────────────────────────────────────────────────────
+commonAnnotations:
+  kustomize.config.k8s.io/overlay: "dev"
