@@ -1,0 +1,263 @@
+# ==============================================================================
+# PVC with ReadWriteMany (RWX) — Shared Storage for Multiple Pods
+# ==============================================================================
+# ReadWriteMany allows a PersistentVolume to be mounted by MULTIPLE pods on
+# MULTIPLE nodes simultaneously — all pods can read AND write at the same time.
+#
+# STORAGE BACKENDS THAT SUPPORT RWX:
+#   ✓ NFS (nfs.csi.k8s.io, or nfs-subdir-external-provisioner)
+#   ✓ CephFS (cephfs.csi.ceph.com)
+#   ✓ Amazon EFS (efs.csi.aws.com)
+#   ✓ Azure Files (file.csi.azure.com)
+#   ✓ Longhorn (driver.longhorn.io) — with caveats for high-throughput
+#   ✓ GCP Filestore (filestore.csi.storage.gke.io)
+#   ✓ OpenEBS NFS Provisioner
+#
+# BACKENDS THAT DO NOT SUPPORT RWX:
+#   ✗ AWS EBS (ebs.csi.aws.com) — block device, only ReadWriteOnce/ReadWriteOncePod
+#   ✗ GCE Persistent Disk (pd.csi.storage.gke.io) — block device, max ReadWriteOnce
+#   ✗ Azure Disk (disk.csi.azure.com) — block device, max ReadWriteOncePod
+#   ✗ Local volumes / hostPath — node-local only
+#
+# WHY BLOCK STORAGE CANNOT BE RWX:
+#   Block devices (EBS, GCE PD, Azure Disk) present raw block I/O. Mounting the
+#   same block device on two nodes simultaneously would cause filesystem
+#   corruption — neither node can coordinate journal/log writes with the other.
+#   File-system-level storage (NFS, CephFS, EFS) uses a shared filesystem layer
+#   that handles concurrent access with proper locking and cache coherency.
+#
+# USE CASES FOR RWX:
+#   1. Shared uploads directory: multiple app replicas writing user-uploaded files.
+#   2. ML training checkpoints: multiple training workers reading/writing model state.
+#   3. Static asset serving: CDN origin — multiple nginx pods serving the same files.
+#   4. Shared caches: multiple pods writing to a shared temporary cache directory.
+#   5. CMS media storage: WordPress or Drupal pods sharing the uploads/ directory.
+#
+# CONSISTENCY WARNINGS:
+#   NFS and most RWX backends do NOT provide strong consistency guarantees.
+#   If Pod A writes a file, Pod B may not see it immediately (NFS cache delay).
+#   For strong consistency, use a database or object storage (S3) instead.
+#   Avoid RWX for: SQLite databases, log files with cross-pod aggregation needs.
+#
+# Apply:
+#   kubectl apply -f pvc-rwx.yml
+#   kubectl get pvc shared-uploads -n workloads
+#   kubectl get deploy shared-assets-server -n workloads
+# ==============================================================================
+
+# ── StorageClass for NFS (using the NFS CSI driver) ──────────────────────────
+# The nfs.csi.k8s.io CSI driver provisions NFS-backed PVs dynamically.
+# Install: https://github.com/kubernetes-csi/csi-driver-nfs
+#   helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+#   helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs --namespace kube-system
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-rwx
+
+  labels:
+    app.kubernetes.io/name: nfs-rwx
+    app.kubernetes.io/instance: nfs-rwx
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      StorageClass for ReadWriteMany NFS volumes. Uses the nfs.csi.k8s.io CSI
+      driver to provision subdirectories on an NFS server. Suitable for shared
+      uploads, ML checkpoints, and static asset serving. Replace nfs.server and
+      nfs.share with your actual NFS server address and export path.
+
+# provisioner: the CSI driver name for NFS.
+# Must match the driver installed in your cluster.
+provisioner: nfs.csi.k8s.io
+
+parameters:
+  # Replace with your actual NFS server IP or hostname.
+  # For AWS EFS, use: <fs-id>.efs.<region>.amazonaws.com
+  server: nfs.storage.example.com
+  share: /exports/kubernetes
+
+  # mountOptions are passed to the NFS mount command.
+  # nconnect=8: use 8 TCP connections per NFS mount (NFSv4.1+ only, improves throughput).
+  # noresvport: use a non-reserved source port (required by some NFS servers).
+
+# reclaimPolicy: Retain — when PVC is deleted, the PV (and NFS directory) is NOT
+# auto-deleted. Manual cleanup is required. Use this for production shared storage
+# to prevent accidental data loss from kubectl delete pvc.
+reclaimPolicy: Retain
+
+# volumeBindingMode: Immediate — PV is provisioned as soon as PVC is created.
+# For RWX storage (NFS, EFS), Immediate is correct — the NFS server is globally
+# accessible from any node, so there is no need for pod scheduling to influence binding.
+volumeBindingMode: Immediate
+
+# allowVolumeExpansion: allows growing the PVC size without recreation.
+allowVolumeExpansion: true
+
+mountOptions:
+  - noresvport
+  - nfsvers=4.1
+
+---
+# ── PVC with ReadWriteMany access mode ────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-uploads
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: shared-uploads
+    app.kubernetes.io/instance: shared-uploads
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      ReadWriteMany PVC backed by NFS for shared file uploads. Multiple pod
+      replicas can mount this PVC simultaneously for reading and writing.
+      All pods in the shared-assets-server Deployment write to the same
+      NFS directory, enabling a shared uploads/ folder across replicas.
+
+spec:
+  # ReadWriteMany (RWX): multiple pods on multiple nodes can mount simultaneously.
+  # Only supported by NFS, CephFS, EFS, Azure Files, and similar shared filesystems.
+  # NOT supported by EBS, GCE PD, Azure Disk (block storage = exclusive mount only).
+  accessModes:
+    - ReadWriteMany
+
+  # storageClassName: must match a StorageClass that supports RWX.
+  storageClassName: nfs-rwx
+
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# ── Deployment with multiple replicas all mounting the same RWX PVC ───────────
+# This demonstrates the primary RWX use case: a stateless Deployment where
+# all replicas need access to the same shared filesystem (uploads, assets, etc.).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shared-assets-server
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: shared-assets-server
+    app.kubernetes.io/instance: shared-assets-server
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Nginx deployment serving static assets from the shared-uploads RWX PVC.
+      All 3 replicas mount the same NFS-backed PVC — a file written by any
+      replica is immediately visible to all others (with NFS cache delay).
+
+spec:
+  replicas: 3  # All 3 pods mount the same shared-uploads PVC simultaneously.
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shared-assets-server
+      app.kubernetes.io/instance: shared-assets-server
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: shared-assets-server
+        app.kubernetes.io/instance: shared-assets-server
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "Shared asset server pod with RWX NFS mount"
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101  # nginx user
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+
+      volumes:
+        # Mount the shared RWX PVC — all 3 replicas mount the same NFS directory.
+        - name: shared-uploads
+          persistentVolumeClaim:
+            claimName: shared-uploads
+            readOnly: false  # All replicas can write (not just read).
+
+        # nginx writable directories (readOnlyRootFilesystem requires emptyDir)
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
+
+      containers:
+        - name: nginx
+          image: nginx:1.25-alpine
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+              name: http
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+
+          volumeMounts:
+            # Shared NFS mount — same data visible on all 3 replicas.
+            # nginx serves files from /usr/share/nginx/html/uploads/.
+            - name: shared-uploads
+              mountPath: /usr/share/nginx/html/uploads
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-tmp
+              mountPath: /tmp
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
