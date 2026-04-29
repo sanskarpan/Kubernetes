@@ -1,0 +1,57 @@
+---
+# Pod — The smallest deployable unit in Kubernetes
+# =================================================
+# A Pod is a wrapper around one or more containers that share:
+#   - Network namespace (same IP address, share ports)
+#   - Storage volumes
+#   - Lifecycle (start/stop together)
+#
+# IMPORTANT: Do NOT run bare Pods in production.
+# If a Pod crashes or the node it runs on fails, it is NOT automatically
+# rescheduled. Use a Deployment instead.
+#
+# This file exists for LEARNING PURPOSES ONLY.
+#
+# Apply:   kubectl apply -f pod.yml
+# Delete:  kubectl delete -f pod.yml
+# Logs:    kubectl logs nginx-pod -c nginx
+# Shell:   kubectl exec -it nginx-pod -c nginx -- /bin/sh
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-pod
+  # Labels are key-value pairs attached to objects.
+  # They are used by selectors to find related resources (Services, HPA, etc.)
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.27"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Intro nginx Pod — learning purposes only. Use a Deployment in production."
+spec:
+  containers:
+    - name: nginx
+      # Use a specific version tag, not :latest.
+      # :latest is a mutable tag — the image it points to can change without warning.
+      image: nginx:1.27
+
+      ports:
+        # Expose port 80 from the container.
+        # This is informational only — Kubernetes does not enforce port restrictions.
+        # The container must actually bind to this port for traffic to work.
+        - containerPort: 80
+          name: http
+          protocol: TCP
+
+      # Resource requests and limits
+      # Requests: what the scheduler uses to choose which node to place the pod on.
+      # Limits: hard upper bounds. Exceeding the memory limit = OOMKilled.
+      resources:
+        requests:
+          cpu: 50m       # 50 millicores = 0.05 vCPU
+          memory: 64Mi   # 64 mebibytes
+        limits:
+          memory: 64Mi   # No CPU limit — see examples/README.md for rationale
