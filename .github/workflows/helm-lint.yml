@@ -1,0 +1,171 @@
+---
+name: Helm Lint
+
+on:
+  push:
+    paths:
+      - "helm/**"
+    branches: ["main", "master", "develop"]
+  pull_request:
+    paths:
+      - "helm/**"
+    branches: ["main", "master", "develop"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HELM_VERSION: "v3.17.0"
+  KUBECONFORM_VERSION: "0.6.7"
+  KUBERNETES_VERSION: "1.32.0"
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Job 1: helm lint --strict on every chart
+  # ----------------------------------------------------------------------------
+  helm-lint:
+    name: Helm Lint (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm ${{ env.HELM_VERSION }}
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Discover and lint all charts
+        run: |
+          echo "Discovering Helm charts under helm/..."
+          CHARTS=$(find helm/ -maxdepth 2 -name "Chart.yaml" -exec dirname {} \; | sort)
+          if [ -z "$CHARTS" ]; then
+            echo "No Helm charts found under helm/. Nothing to lint."
+            exit 0
+          fi
+          FAILED=0
+          for chart in $CHARTS; do
+            echo "------------------------------------------------------------"
+            echo "Linting: $chart"
+            echo "------------------------------------------------------------"
+            helm lint --strict "$chart" || FAILED=1
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::One or more Helm charts failed linting. Review the output above."
+            exit 1
+          fi
+          echo "All charts passed helm lint."
+
+  # ----------------------------------------------------------------------------
+  # Job 2: helm template | kubeconform — render and schema-validate
+  # ----------------------------------------------------------------------------
+  helm-template-validate:
+    name: Helm Template + kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm ${{ env.HELM_VERSION }}
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL \
+            "https://github.com/yannh/kubeconform/releases/download/v${{ env.KUBECONFORM_VERSION }}/kubeconform-linux-amd64.tar.gz" \
+            -o /tmp/kubeconform.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp
+          sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
+          chmod +x /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: Render charts and validate with kubeconform
+        run: |
+          echo "Discovering Helm charts under helm/..."
+          CHARTS=$(find helm/ -maxdepth 2 -name "Chart.yaml" -exec dirname {} \; | sort)
+          if [ -z "$CHARTS" ]; then
+            echo "No Helm charts found. Skipping."
+            exit 0
+          fi
+          FAILED=0
+          for chart in $CHARTS; do
+            CHART_NAME=$(basename "$chart")
+            echo "------------------------------------------------------------"
+            echo "Rendering and validating: $chart ($CHART_NAME)"
+            echo "------------------------------------------------------------"
+            helm template "$CHART_NAME" "$chart" \
+              --debug \
+            | kubeconform \
+                -kubernetes-version "${{ env.KUBERNETES_VERSION }}" \
+                -strict \
+                -ignore-missing-schemas \
+                -summary \
+                -output pretty \
+            || FAILED=1
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::One or more rendered Helm charts failed schema validation."
+            exit 1
+          fi
+          echo "All Helm chart templates passed kubeconform validation."
+
+  # ----------------------------------------------------------------------------
+  # Job 3: Helm dependency check
+  # ----------------------------------------------------------------------------
+  helm-dependency:
+    name: Helm Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm ${{ env.HELM_VERSION }}
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Check chart dependencies are declared consistently
+        run: |
+          CHARTS=$(find helm/ -maxdepth 2 -name "Chart.yaml" -exec dirname {} \; | sort)
+          if [ -z "$CHARTS" ]; then
+            echo "No charts found. Skipping."
+            exit 0
+          fi
+          FAILED=0
+          for chart in $CHARTS; do
+            if grep -q "dependencies:" "$chart/Chart.yaml" 2>/dev/null; then
+              echo "Chart '$chart' has dependencies — running helm dependency build..."
+              helm dependency build "$chart" || FAILED=1
+            else
+              echo "Chart '$chart' has no dependencies. OK."
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Helm dependency build failed for one or more charts."
+            exit 1
+          fi
+
+  # ----------------------------------------------------------------------------
+  # Gate job
+  # ----------------------------------------------------------------------------
+  helm-ci-success:
+    name: Helm CI Success
+    runs-on: ubuntu-latest
+    needs: [helm-lint, helm-template-validate, helm-dependency]
+    if: always()
+    steps:
+      - name: Check all Helm jobs passed
+        run: |
+          for job_result in \
+            "${{ needs.helm-lint.result }}" \
+            "${{ needs.helm-template-validate.result }}" \
+            "${{ needs.helm-dependency.result }}"; do
+            if [[ "$job_result" != "success" ]]; then
+              echo "::error::One or more Helm CI jobs failed."
+              exit 1
+            fi
+          done
+          echo "All Helm CI checks passed."
