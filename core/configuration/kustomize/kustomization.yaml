@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# configMapGenerator creates ConfigMaps from literals and files.
+# Kustomize appends a hash suffix to force rolling updates on change.
+configMapGenerator:
+  - name: app-config
+    namespace: demo
+    literals:
+      - LOG_LEVEL=info
+      - APP_MODE=production
+    options:
+      labels:
+        app.kubernetes.io/part-of: demo-app
+
+  - name: nginx-conf
+    namespace: demo
+    files:
+      - configs/nginx.conf
+
+# secretGenerator creates Secrets. Same hash-suffix behavior as configMapGenerator.
+# IMPORTANT: Do NOT commit real secret values. Use sealed-secrets or ESO in production.
+secretGenerator:
+  - name: db-credentials
+    namespace: demo
+    type: Opaque
+    literals:
+      - DB_USER=app_reader
+      - DB_PASSWORD=CHANGE_ME_USE_SEALED_SECRETS
+    options:
+      labels:
+        app.kubernetes.io/part-of: demo-app
