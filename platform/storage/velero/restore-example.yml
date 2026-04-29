@@ -1,0 +1,73 @@
+# =============================================================================
+# Velero Restore Example
+# =============================================================================
+# This Restore resource restores a specific namespace from a named backup.
+# Apply this manifest to trigger a restore operation.
+#
+# IMPORTANT: Before restoring, ensure:
+#   1. The target namespace does NOT already exist (or use --existing-resource-policy=update).
+#   2. Any conflicting resources (PVCs, Secrets) are deleted first.
+#   3. The BackupStorageLocation is accessible.
+#
+# Usage:
+#   kubectl apply -f restore-example.yml
+#   kubectl get restore -n velero
+#   kubectl describe restore restore-data-namespace -n velero
+# =============================================================================
+
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  # Give the restore a meaningful, unique name.
+  # Convention: restore-<namespace>-<date>
+  name: restore-data-namespace
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: restore
+spec:
+  # Reference the specific backup to restore from.
+  # To list available backups: velero backup get
+  # Or: kubectl get backup -n velero
+  backupName: daily-statefulset-backup-20260115020000
+
+  # Namespaces to restore (subset of what was backed up).
+  includedNamespaces:
+    - data
+
+  # Resource types to restore. Use "*" to restore all resource types.
+  includedResources:
+    - "*"
+
+  # Exclude resources that should not be restored (e.g., if they already exist
+  # and you only want to restore data volumes).
+  excludedResources:
+    - nodes
+    - events
+    - events.events.k8s.io
+    - backups.velero.io
+    - restores.velero.io
+    - resticrepositories.velero.io
+
+  # Restore PersistentVolumes (and their data) from volume snapshots.
+  # Set to false if you only want to restore Kubernetes objects, not data.
+  restorePVs: true
+
+  # Namespace mappings — restore resources from a namespace into a different namespace.
+  # Useful for cloning a production namespace into staging for testing.
+  # namespaceMapping:
+  #   data: data-restored
+
+  # How to handle resources that already exist in the cluster.
+  # Options: none (skip), update (patch existing resources)
+  existingResourcePolicy: none
+
+  # Label selector — restore only resources with specific labels.
+  # Useful for partial restores (e.g., only restore the MySQL StatefulSet).
+  # labelSelector:
+  #   matchLabels:
+  #     app.kubernetes.io/name: mysql
+
+  # Hooks — run commands after the restore completes (e.g., to warm caches).
+  hooks:
+    resources: []
