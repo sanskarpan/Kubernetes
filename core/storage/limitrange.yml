@@ -1,0 +1,129 @@
+# ==============================================================================
+# LimitRange — Namespace Resource Governance
+# ==============================================================================
+# A LimitRange sets default resource requests/limits for containers in a
+# namespace and enforces minimum/maximum bounds.
+#
+# Without LimitRange, a pod with NO resource declarations gets UNLIMITED
+# resources on the node. A single runaway pod can consume all node CPU and
+# memory, starving other pods on the same node (the "noisy neighbor" problem).
+#
+# HOW LIMITRANGE INTERACTS WITH PODS:
+#
+# 1. DEFAULT: If a container in a new pod omits resources.requests or
+#    resources.limits, the LimitRange's default/defaultRequest values are
+#    injected by the admission controller BEFORE the pod is created.
+#    This means all pods in this namespace automatically have resource
+#    governance even if developers forgot to specify them.
+#
+# 2. ENFORCEMENT: If a container specifies resources that exceed the max
+#    or fall below the min, the pod admission is REJECTED with a clear error.
+#    This catches misconfigured pod specs at creation time.
+#
+# 3. QoS CLASS IMPACT:
+#    - Guaranteed: requests == limits for ALL containers (best performance predictability)
+#    - Burstable: requests < limits for at least one container
+#    - BestEffort: no requests or limits set at all (evicted first under pressure)
+#    With this LimitRange's defaults, new pods without explicit resources get
+#    Burstable QoS (requests 100m/128Mi, limits 500m/512Mi).
+#
+# RELATIONSHIP TO RESOURCEQUOTA:
+#   LimitRange operates at the individual container level.
+#   ResourceQuota operates at the namespace level (total aggregate usage).
+#   Use both together: LimitRange prevents runaway individual containers,
+#   ResourceQuota prevents runaway aggregate namespace consumption.
+#
+# Apply:
+#   kubectl apply -f limitrange.yml
+#   kubectl describe limitrange workloads-limit-range -n workloads
+# ==============================================================================
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: workloads-limit-range
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: workloads-limit-range
+    app.kubernetes.io/instance: workloads-limit-range
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: resource-governance
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      LimitRange for the workloads namespace. Injects default resource requests
+      and limits for containers that do not specify them. Enforces maximum
+      container resource bounds to prevent runaway workloads from starving
+      the node. Without LimitRange, pods with no resource declarations
+      receive unlimited node resources.
+
+spec:
+  limits:
+    # -------------------------------------------------------------------------
+    # Container limits — applies to every container in every pod in this namespace.
+    # -------------------------------------------------------------------------
+    - type: Container
+
+      # default: injected as limits if the container omits resources.limits.
+      # Any container that doesn't specify limits gets these values automatically.
+      default:
+        cpu: "500m"         # 0.5 CPU core maximum per container by default.
+                            # Containers that need more must explicitly declare it
+                            # (up to the max below).
+        memory: "512Mi"     # 512 MiB maximum per container by default.
+
+      # defaultRequest: injected as requests if the container omits resources.requests.
+      # Requests affect scheduling (how much capacity the scheduler reserves).
+      # Setting requests below limits allows CPU bursting (Burstable QoS class).
+      defaultRequest:
+        cpu: "100m"         # 0.1 CPU core reserved per container by default.
+        memory: "128Mi"     # 128 MiB reserved per container by default.
+
+      # max: the hard ceiling — no container in this namespace can request
+      # or have limits exceeding these values. If a pod spec exceeds max,
+      # the pod is REJECTED by the admission controller at creation time.
+      # This prevents runaway containers regardless of what developers specify.
+      max:
+        cpu: "2"            # 2 CPU cores maximum per container.
+                            # Adjust to match the largest expected workload
+                            # in this namespace. A container needing more
+                            # should be in a dedicated high-resource namespace.
+        memory: "2Gi"       # 2 GiB maximum per container.
+
+      # min: the floor — containers must request at least this much.
+      # If a container requests less than min, it is rejected.
+      # Usually left unset (commented out) unless you need to prevent
+      # containers from requesting zero resources.
+      # min:
+      #   cpu: "10m"
+      #   memory: "32Mi"
+
+      # maxLimitRequestRatio: the maximum ratio of limit to request.
+      # Prevents containers from setting absurdly large limits relative to
+      # their requests (which can cause resource overcommit instability).
+      # A ratio of 4 means limits cannot be more than 4x the request.
+      # maxLimitRequestRatio:
+      #   cpu: "4"
+      #   memory: "4"
+
+    # -------------------------------------------------------------------------
+    # Pod limits — applies to the SUM of all containers in a pod.
+    # -------------------------------------------------------------------------
+    # Uncomment to enforce aggregate limits per pod (sum of all containers).
+    # - type: Pod
+    #   max:
+    #     cpu: "4"
+    #     memory: "4Gi"
+
+    # -------------------------------------------------------------------------
+    # PersistentVolumeClaim limits — applies to storage requests.
+    # -------------------------------------------------------------------------
+    # Prevents individual PVCs from requesting excessive storage.
+    - type: PersistentVolumeClaim
+      max:
+        storage: "10Gi"     # No single PVC can request more than 10Gi.
+      min:
+        storage: "1Mi"      # PVCs must request at least 1Mi.
+                            # Prevents zero-storage PVCs from being created.
