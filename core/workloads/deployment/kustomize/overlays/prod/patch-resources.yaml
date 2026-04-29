@@ -1,0 +1,55 @@
+# ==============================================================================
+# overlays/prod/patch-resources.yaml
+# Strategic merge patch for production resource limits.
+#
+# Production resource sizing principles:
+#   1. memory request: P50 observed usage in staging load tests + 10% buffer.
+#   2. memory limit: P99 observed usage in staging load tests + 20% buffer.
+#      Set this too low → OOM kills in production under peak traffic.
+#      Set this too high → wastes cluster capacity and inflates costs.
+#   3. cpu request: P50 observed cpu usage in staging load tests.
+#   4. cpu limit: intentionally omitted — CPU throttling degrades p99 latency.
+#
+# Memory limit = request for Guaranteed QoS:
+#   In this manifest, memory limit > request → "Burstable" QoS class.
+#   The Pod can burst above its request up to the limit. Under node memory
+#   pressure, Burstable pods are evicted before BestEffort but after Guaranteed.
+#
+#   If you need Guaranteed QoS (highest eviction protection), set:
+#     requests.memory == limits.memory
+#
+# Process for updating these values:
+#   1. Run load tests in staging with production-representative traffic.
+#   2. Check prometheus metrics: container_memory_usage_bytes{container="nginx"}
+#   3. Calculate p99 + 20% headroom → set as limits.memory.
+#   4. Calculate p50 → set as requests.memory and requests.cpu.
+#   5. Submit a PR to this file with the observed data in the commit message.
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  template:
+    spec:
+      containers:
+      - name: nginx
+        resources:
+          requests:
+            # Production request: sized for the typical (P50) pod load.
+            # This is what the Kubernetes scheduler uses to place pods on nodes.
+            # If the sum of requests on a node exceeds node capacity, new pods
+            # are not scheduled there (Pending state).
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            # Production memory limit: sized to handle peak (P99) traffic spikes.
+            # nginx memory usage scales with: concurrent connections × per-connection buffer.
+            # For a typical reverse proxy workload, 512Mi handles significant traffic.
+            # Increase if you see OOMKilled events: kubectl get events -n prod | grep OOM
+            memory: "512Mi"
+            # CPU limit intentionally omitted.
+            # Production traffic has bursts (marketing campaigns, viral events).
+            # CPU throttling during these bursts would directly increase p99 latency.
+            # Monitor `container_cpu_throttled_seconds_total` in Prometheus.
+            # If the pod consistently uses >800m CPU, increase the cpu request instead.
