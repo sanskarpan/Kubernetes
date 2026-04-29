@@ -1,0 +1,316 @@
+# ==============================================================================
+# Init Container Pattern: Database Migration Before App Startup
+# ==============================================================================
+# This Deployment demonstrates using an init container to run database schema
+# migrations BEFORE the main application container starts. This guarantees:
+#   1. The database schema is always up-to-date before any app code runs.
+#   2. A failed migration PREVENTS the app from starting (fail fast).
+#   3. The app never serves traffic on a stale schema (no partial rollouts).
+#
+# HOW THE INIT CONTAINER PATTERN WORKS HERE:
+#   1. Pod is scheduled and init container "run-migrations" starts.
+#   2. The migration script connects to the database and applies schema changes.
+#   3. If the script exits 0 (success): init container completes, app starts.
+#   4. If the script exits non-zero (failure): the pod stays in "Init:Error" or
+#      "Init:CrashLoopBackOff" state. The app NEVER starts. The Deployment
+#      remains at the OLD replica set — traffic is NOT routed to broken pods.
+#      No data corruption can occur because the app has not run yet.
+#
+# HANDLING MIGRATION FAILURES:
+#   When the init container fails:
+#     kubectl get pods -n workloads              # Shows: Init:CrashLoopBackOff
+#     kubectl logs -n workloads <pod> -c run-migrations  # Shows migration error
+#   Fix the migration script, rebuild the image, and redeploy:
+#     kubectl set image deployment/app-with-migration \
+#       run-migrations=my-app:v2.fix -n workloads
+#   Or roll back the entire Deployment:
+#     kubectl rollout undo deployment/app-with-migration -n workloads
+#
+# MIGRATION TOOL CHOICES:
+#   - Flyway:             Java-based, SQL versioned migrations, popular in Spring Boot stacks.
+#   - Liquibase:          XML/YAML/SQL changelogs, rollback support.
+#   - golang-migrate:     Go binary, supports many databases, CI-friendly.
+#   - Alembic:            Python/SQLAlchemy migrations.
+#   - Custom shell script: shown here for simplicity — works for any database.
+#
+# IDEMPOTENCY REQUIREMENT:
+#   Migrations MUST be idempotent (safe to run multiple times). Why?
+#     - Pods can be restarted, which re-runs the init container.
+#     - Deployment rollouts create multiple pod replicas concurrently — if
+#       parallelism > 0, multiple pods may run migrations simultaneously.
+#     - Use: IF NOT EXISTS, CREATE TABLE IF NOT EXISTS, ON CONFLICT DO NOTHING.
+#     - Track applied migrations in a schema_migrations table (Flyway/Liquibase do this).
+#
+# SHARED CONFIGMAP:
+#   Both the init container and the main app container read from the same
+#   ConfigMap (db-config) for the database connection string. This ensures
+#   they always connect to the same database.
+#
+# Apply:
+#   kubectl apply -f init-container-db-migration.yml
+#   kubectl rollout status deployment/app-with-migration -n workloads
+#   kubectl logs -n workloads -l app.kubernetes.io/name=app-with-migration -c run-migrations
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-migration-config
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: db-migration-config
+    app.kubernetes.io/instance: db-migration-config
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: configuration
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Database connection configuration shared between the migration init
+      container and the main application container. Both read the same DB_HOST
+      and DB_PORT values to guarantee they connect to the same database.
+
+data:
+  # Database connection settings shared by init container and main app.
+  # Using the Kubernetes service DNS name so it works from any namespace.
+  DB_HOST: "postgres.database.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "appdb"
+  DB_USER: "appuser"
+
+  # Migration script embedded in the ConfigMap.
+  # In production, this would be baked into the application image or a
+  # dedicated migration image (e.g., flyway/flyway:10 or liquibase/liquibase:4).
+  migrate.sh: |
+    #!/bin/sh
+    set -e  # Exit immediately on any error — critical for migrations.
+    set -u  # Treat unset variables as errors.
+
+    echo "============================================"
+    echo "Database Migration Script Starting"
+    echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "DB Host: ${DB_HOST}"
+    echo "DB Port: ${DB_PORT}"
+    echo "DB Name: ${DB_NAME}"
+    echo "============================================"
+
+    echo "Running migrations..."
+
+    # Step 1: Verify database connectivity before attempting migrations.
+    # In production, replace 'nc' with an actual DB connection check, e.g.:
+    #   PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST}" -U "${DB_USER}" "${DB_NAME}" -c "SELECT 1"
+    echo "[SIMULATED] Checking DB connectivity at ${DB_HOST}:${DB_PORT}..."
+    echo "[SIMULATED] Connected successfully."
+
+    # Step 2: Create schema_migrations tracking table (idempotent).
+    # A real migration tool handles this automatically.
+    echo "[SIMULATED] CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(255) PRIMARY KEY, applied_at TIMESTAMP);"
+
+    # Step 3: Apply pending migrations in version order.
+    echo "[SIMULATED] Applying migration V001__create_users.sql..."
+    echo "[SIMULATED]   CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, created_at TIMESTAMP DEFAULT NOW());"
+
+    echo "[SIMULATED] Applying migration V002__create_sessions.sql..."
+    echo "[SIMULATED]   CREATE TABLE IF NOT EXISTS sessions (id UUID PRIMARY KEY, user_id INTEGER REFERENCES users(id), expires_at TIMESTAMP);"
+
+    echo "[SIMULATED] Applying migration V003__add_user_roles.sql..."
+    echo "[SIMULATED]   ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user';"
+
+    # Step 4: Record completion.
+    echo "[SIMULATED] Schema version: V003 — all migrations applied."
+
+    echo "============================================"
+    echo "Database Migration Completed Successfully"
+    echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "============================================"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-with-migration
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: app-with-migration
+    app.kubernetes.io/instance: app-with-migration
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Deployment demonstrating the init container database migration pattern.
+      The init container runs schema migrations before the main app starts.
+      Failed migrations keep the pod in Init state — the app never starts on
+      a stale schema. See db-migration-config ConfigMap for the migration script.
+
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app-with-migration
+      app.kubernetes.io/instance: app-with-migration
+
+  # maxUnavailable: 0 — no old pods are removed until new pods are fully ready.
+  # This means migrations run (init container) and the app starts (readiness probe
+  # passes) before old pods are terminated. Zero-downtime migration pattern.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: app-with-migration
+        app.kubernetes.io/instance: app-with-migration
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "App pod with DB migration init container"
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      volumes:
+        # Mount the migration script from the ConfigMap.
+        # The script is written at ConfigMap creation and mounted read-only.
+        - name: migration-scripts
+          configMap:
+            name: db-migration-config
+            # Only mount the script file — not the connection string keys.
+            items:
+              - key: migrate.sh
+                path: migrate.sh
+            defaultMode: 0550  # Owner+group execute, no write
+        - name: tmp
+          emptyDir: {}
+
+      # ── Init Container: Database Migration ────────────────────────────────────
+      # This runs ONCE before ANY main container starts.
+      # Exit code 0 → main container starts.
+      # Exit code non-zero → pod stays in Init state, main container NEVER starts.
+      initContainers:
+        - name: run-migrations
+          # In production: replace with your actual migration image.
+          # Options:
+          #   flyway/flyway:10          — Flyway community edition
+          #   liquibase/liquibase:4     — Liquibase
+          #   ghcr.io/golang-migrate/migrate:v4 — golang-migrate
+          #   your-org/app-migrations:v1.2.3    — custom migration image
+          image: alpine:3.19
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/sh
+            - /scripts/migrate.sh
+
+          # Read connection details from the shared ConfigMap.
+          # The DB_PASSWORD would come from a Secret in production:
+          #   - name: DB_PASSWORD
+          #     valueFrom:
+          #       secretKeyRef:
+          #         name: db-credentials
+          #         key: password
+          envFrom:
+            - configMapRef:
+                name: db-migration-config
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+
+          volumeMounts:
+            - name: migration-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      # ── Main Application Container ────────────────────────────────────────────
+      # Starts ONLY after run-migrations exits 0.
+      # Uses the same ConfigMap for connection details — same DB as the migration.
+      containers:
+        - name: app
+          image: alpine:3.19
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== Application Starting ==="
+              echo "Migrations complete — schema is up to date."
+              echo "DB Host: ${DB_HOST}"
+              echo "Starting application server..."
+              # Simulate a running web server
+              while true; do
+                echo "$(date -u) Application is running. DB: ${DB_HOST}:${DB_PORT}/${DB_NAME}"
+                sleep 30
+              done
+
+          envFrom:
+            - configMapRef:
+                name: db-migration-config
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+          livenessProbe:
+            exec:
+              command: [/bin/sh, -c, "echo ok"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command: [/bin/sh, -c, "echo ok"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
