@@ -1,0 +1,182 @@
+# ==============================================================================
+# Projected Volume — Combining Multiple Volume Sources
+# ==============================================================================
+# A projected volume combines multiple volume sources into a SINGLE directory
+# mount point. Without projected volumes, each source (ServiceAccount token,
+# ConfigMap, Secret) would require a separate volumeMount — cluttering the
+# container spec and creating multiple directories.
+#
+# WHY PROJECTED VOLUMES ARE BETTER THAN SEPARATE MOUNTS:
+#   1. Single mount point: all secrets/configs appear under one directory tree,
+#      making application code simpler (/var/run/secrets/app/token, /var/run/secrets/app/config.json).
+#   2. Short-lived tokens: the serviceAccountToken source creates a time-limited
+#      token (expirationSeconds) that kubelet rotates automatically before expiry.
+#      This is far safer than the long-lived tokens mounted by automountServiceAccountToken.
+#   3. Audience validation: the "audience" field binds the token to a specific
+#      service (e.g., the API server or a custom OIDC relying party). Tokens
+#      stolen from one service cannot be used against another.
+#   4. Atomic updates: when a ConfigMap or Secret is updated, the kubelet updates
+#      ALL files in the projected volume atomically (via symlink swap), preventing
+#      partial reads during an update.
+#
+# TOKEN AUTO-ROTATION BY KUBELET:
+#   kubelet monitors the token's expiry and requests a new token from the API
+#   server when 80% of the TTL has elapsed (or when the pod restarts). The file
+#   at /var/run/secrets/app/token is updated in place. Applications MUST re-read
+#   the token file periodically — caching it at startup will break after the
+#   first rotation. Most client libraries (client-go, boto3, etc.) handle this
+#   automatically if configured to read from file.
+#
+# AUDIENCE VALIDATION:
+#   The "audience" field specifies who the token is intended for (the "aud" claim
+#   in the JWT). If you pass this token to an API server configured with
+#   --api-audiences=api, it validates correctly. Tokens with an unexpected
+#   audience are rejected. This prevents confused deputy attacks.
+#
+# automountServiceAccountToken: false:
+#   Since we are projecting the token manually, we disable the default
+#   auto-mounting behavior. The default token (mounted at
+#   /var/run/secrets/kubernetes.io/serviceaccount/token) is long-lived and
+#   has no audience restriction. Using projected volumes replaces this
+#   with a short-lived, audience-scoped token.
+#
+# Apply:
+#   kubectl apply -f projected-volume.yml
+#   kubectl exec -n workloads projected-volume-demo -- cat /var/run/secrets/app/token
+#   kubectl exec -n workloads projected-volume-demo -- ls /var/run/secrets/app/
+# ==============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: projected-volume-demo
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: projected-volume-demo
+    app.kubernetes.io/instance: projected-volume-demo
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: demo
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Demonstrates a projected volume combining serviceAccountToken,
+      ConfigMap, and Secret sources into a single directory. Uses a short-lived
+      audience-scoped token instead of the default long-lived service account
+      token. Requires automountServiceAccountToken: false.
+
+spec:
+  # CRITICAL: Disable default token auto-mounting because we project the token
+  # manually below with a shorter TTL and audience restriction.
+  # If both automountServiceAccountToken and a projected serviceAccountToken
+  # source are active, you end up with two tokens — the projected one is safer.
+  automountServiceAccountToken: false
+
+  terminationGracePeriodSeconds: 30
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
+
+  volumes:
+    # ── Projected Volume: combines three sources into /var/run/secrets/app/ ───
+    - name: app-secrets
+      projected:
+        # defaultMode: 0440 — owner and group can read; no world-readable secrets.
+        # Individual sources can override this with their own mode field.
+        defaultMode: 0440
+        sources:
+          # ── Source 1: Short-lived, audience-scoped ServiceAccount token ──────
+          # kubelet requests a new token from the TokenRequest API and writes it
+          # to the projected volume. The token is automatically rotated when 80%
+          # of expirationSeconds has elapsed.
+          - serviceAccountToken:
+              # expirationSeconds: token lifetime. 3600 = 1 hour.
+              # Minimum: 600 (10 minutes). Kubernetes default for projected tokens.
+              # The kubelet will NOT allow tokens shorter than 10 minutes to prevent
+              # rotation storms. Choose based on your threat model:
+              #   3600 (1h)  — good balance for most applications
+              #   600  (10m) — high-security environments
+              #   86400 (1d) — low-risk batch jobs with infrequent API calls
+              expirationSeconds: 3600
+              # audience: the intended recipient of this token (JWT "aud" claim).
+              # Must match the --api-audiences flag on the API server, OR the
+              # audience of a custom OIDC relying party (e.g., Vault, Istio).
+              audience: "api"
+              # path: filename within the projected volume directory.
+              path: token
+
+          # ── Source 2: ConfigMap items (selected keys only) ──────────────────
+          # Only the listed items are projected; other ConfigMap keys are excluded.
+          # This is safer than mounting the entire ConfigMap — pods only see
+          # the config they need.
+          - configMap:
+              name: app-config
+              items:
+                - key: LOG_LEVEL
+                  path: config/log-level
+                - key: DATABASE_HOST
+                  path: config/db-host
+              optional: false  # Fail pod startup if ConfigMap does not exist.
+
+          # ── Source 3: Secret items (selected keys only) ──────────────────────
+          # Same selective projection pattern as ConfigMap.
+          # Secrets are stored in tmpfs on the node — they are never written to
+          # node disk. The projected volume preserves this property.
+          - secret:
+              name: app-secret
+              items:
+                - key: db-password
+                  path: secrets/db-password
+                  # mode: 0400 — owner-read only for sensitive credentials.
+                  mode: 0400
+              optional: false
+
+    # Writable scratch space for the app (readOnlyRootFilesystem requires this)
+    - name: tmp
+      emptyDir: {}
+
+  containers:
+    - name: app
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== Projected Volume Demo ==="
+          echo "Token (first 50 chars): $(head -c 50 /var/run/secrets/app/token)..."
+          echo "Log level: $(cat /var/run/secrets/app/config/log-level)"
+          echo "DB host: $(cat /var/run/secrets/app/config/db-host)"
+          echo "DB password exists: $(test -f /var/run/secrets/app/secrets/db-password && echo yes || echo no)"
+          echo "Files in /var/run/secrets/app/:"
+          find /var/run/secrets/app/ -type f
+          echo "Sleeping to allow token rotation observation..."
+          sleep 3600
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "32Mi"
+
+      volumeMounts:
+        # Mount the projected volume — all three sources appear under one directory.
+        - name: app-secrets
+          mountPath: /var/run/secrets/app
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
