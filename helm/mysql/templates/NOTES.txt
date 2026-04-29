@@ -1,0 +1,66 @@
+============================================================
+  MySQL Helm Chart — Deployment Complete
+  Release  : {{ .Release.Name }}
+  Namespace: {{ .Release.Namespace }}
+  Chart    : {{ .Chart.Name }}-{{ .Chart.Version }}
+  App      : MySQL {{ .Chart.AppVersion }}
+============================================================
+
+1. Verify the StatefulSet is running:
+
+   kubectl rollout status statefulset/{{ include "mysql.fullname" . }} \
+     -n {{ .Release.Namespace }}
+
+   kubectl get pods -l {{ include "mysql.selectorLabels" . | replace ": " "=" | replace "\n" "," }} \
+     -n {{ .Release.Namespace }}
+
+2. Retrieve the MySQL root password:
+
+{{- if .Values.auth.existingSecret }}
+   # Using existing secret: {{ .Values.auth.existingSecret }}
+   kubectl get secret {{ .Values.auth.existingSecret }} \
+     -n {{ .Release.Namespace }} \
+     -o jsonpath='{.data.mysql-root-password}' | base64 -d
+{{- else }}
+   kubectl get secret {{ include "mysql.fullname" . }} \
+     -n {{ .Release.Namespace }} \
+     -o jsonpath='{.data.mysql-root-password}' | base64 -d
+{{- end }}
+
+3. Connect to MySQL via port-forward (for local development):
+
+   kubectl port-forward service/{{ include "mysql.fullname" . }} \
+     3306:{{ .Values.service.port }} \
+     -n {{ .Release.Namespace }}
+
+   Then connect:
+   mysql -h 127.0.0.1 -P 3306 -u root -p{{ " " }}
+   # Or with the app user:
+   mysql -h 127.0.0.1 -P 3306 -u {{ .Values.auth.username }} -p {{ .Values.auth.database }}
+
+4. Connect from within the cluster:
+
+   Host (ClusterIP):  {{ include "mysql.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+   Host (Headless):   {{ include "mysql.fullname" . }}-0.{{ include "mysql.fullname" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+   Database:          {{ .Values.auth.database }}
+   User:              {{ .Values.auth.username }}
+
+5. View MySQL logs:
+
+   kubectl logs {{ include "mysql.fullname" . }}-0 \
+     -n {{ .Release.Namespace }} \
+     --tail=100 -f
+
+6. Upgrade the release:
+
+   helm upgrade {{ .Release.Name }} ./helm/mysql \
+     -n {{ .Release.Namespace }} \
+     -f values-prod.yaml \
+     --atomic \
+     --timeout 5m
+
+7. Uninstall the release (data PVCs are NOT deleted automatically):
+
+   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+   # To also delete data (DESTRUCTIVE):
+   kubectl delete pvc data-{{ include "mysql.fullname" . }}-0 -n {{ .Release.Namespace }}
