@@ -26,14 +26,14 @@ spec:
   template:
     spec:
       containers:
-      - name: nginx   # Strategic merge key — identifies which container to patch
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            # Dev memory limit: small but sufficient for serving test traffic.
-            # If the container exceeds this, it is OOM-killed — acceptable in dev.
-            memory: "128Mi"
-            # Note: no cpu limit even in dev — we still avoid throttling to keep
-            # the local development experience responsive.
+        - name: nginx   # Strategic merge key — identifies which container to patch
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              # Dev memory limit: small but sufficient for serving test traffic.
+              # If the container exceeds this, it is OOM-killed — acceptable in dev.
+              memory: "128Mi"
+              # Note: no cpu limit even in dev — we still avoid throttling to keep
+              # the local development experience responsive.

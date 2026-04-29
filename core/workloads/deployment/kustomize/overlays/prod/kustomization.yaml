@@ -30,32 +30,32 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-- ../../base
+  - ../../base
 
 namespace: prod
 
 # 4 replicas → with topologySpreadConstraints in the base, these spread across
 # availability zones. 4 replicas in 2 zones = 2 per zone.
 replicas:
-- name: nginx
-  count: 4
+  - name: nginx
+    count: 4
 
 images:
-- name: nginx
-  # Production uses a pinned minor version for stability.
-  # In a hardened production setup, use newDigest instead of newTag:
-  # newDigest: sha256:<immutable-digest-from-ci-pipeline>
-  newTag: "1.25"
+  - name: nginx
+    # Production uses a pinned minor version for stability.
+    # In a hardened production setup, use newDigest instead of newTag:
+    # newDigest: sha256:<immutable-digest-from-ci-pipeline>
+    newTag: "1.25"
 
 # Production applies TWO patches, each focused on one concern:
 #   1. patch-replicas.yaml  — replica count (now handled by replicas: above,
 #      but shown here as a reference for teams that prefer explicit patches)
 #   2. patch-resources.yaml — resource limits sized for production traffic
 patches:
-- path: patch-resources.yaml
-  target:
-    kind: Deployment
-    name: nginx
+  - path: patch-resources.yaml
+    target:
+      kind: Deployment
+      name: nginx
 
 commonLabels:
   environment: prod

@@ -42,10 +42,10 @@ spec:
     app.kubernetes.io/name: nginx-canary-demo
     track: canary   # Only matches canary deployment pods (track: canary)
   ports:
-  - name: http
-    port: 80
-    targetPort: 8080
-    protocol: TCP
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
 ---
 # Primary (stable) Ingress — routes the majority of traffic to the stable service.
 # This is the baseline Ingress that exists even without a canary.
@@ -70,18 +70,18 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-  - host: nginx-canary-demo.example.com   # Replace with your actual domain
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            # Points to the combined service (stable + canary pods) for baseline traffic.
-            # The canary Ingress will intercept its percentage before routing to this service.
-            name: nginx-canary-demo
-            port:
-              number: 80
+    - host: nginx-canary-demo.example.com   # Replace with your actual domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # Points to the combined service (stable + canary pods) for baseline traffic.
+                # The canary Ingress will intercept its percentage before routing to this service.
+                name: nginx-canary-demo
+                port:
+                  number: 80
 ---
 # Canary Ingress — routes a precise percentage of traffic to the canary service.
 # NGINX Ingress Controller evaluates canary annotations and splits traffic before
@@ -134,14 +134,14 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-  - host: nginx-canary-demo.example.com   # Must match the primary Ingress host exactly
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            # Points to the canary-only service (selects only canary pods)
-            name: nginx-canary-only
-            port:
-              number: 80
+    - host: nginx-canary-demo.example.com   # Must match the primary Ingress host exactly
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # Points to the canary-only service (selects only canary pods)
+                name: nginx-canary-only
+                port:
+                  number: 80

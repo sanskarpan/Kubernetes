@@ -100,111 +100,111 @@ spec:
   # emptyDir is created fresh for each Pod instance and deleted when the Pod
   # is removed — perfectly suited for ephemeral scratch space.
   volumes:
-  - name: nginx-tmp
-    # Nginx writes temporary files (client body, proxy buffers) to /tmp
-    emptyDir: {}
-  - name: nginx-run
-    # Nginx writes its PID file to /var/run/nginx.pid
-    emptyDir: {}
-  - name: nginx-cache
-    # Nginx uses /var/cache/nginx for proxy cache and other caches
-    emptyDir: {}
+    - name: nginx-tmp
+      # Nginx writes temporary files (client body, proxy buffers) to /tmp
+      emptyDir: {}
+    - name: nginx-run
+      # Nginx writes its PID file to /var/run/nginx.pid
+      emptyDir: {}
+    - name: nginx-cache
+      # Nginx uses /var/cache/nginx for proxy cache and other caches
+      emptyDir: {}
 
   containers:
-  - name: nginx
-    # Pin to a specific digest in production to prevent image drift.
-    # Using a tag here for readability; replace with:
-    # nginx@sha256:<digest> in a real production environment.
-    image: nginx:1.25-alpine
+    - name: nginx
+      # Pin to a specific digest in production to prevent image drift.
+      # Using a tag here for readability; replace with:
+      # nginx@sha256:<digest> in a real production environment.
+      image: nginx:1.25-alpine
 
-    # Expose the port nginx listens on. This is informational only — Kubernetes
-    # does not use this to configure networking. The actual port binding is done
-    # by nginx's configuration.
-    ports:
-    - containerPort: 80
-      protocol: TCP
-      name: http
+      # Expose the port nginx listens on. This is informational only — Kubernetes
+      # does not use this to configure networking. The actual port binding is done
+      # by nginx's configuration.
+      ports:
+        - containerPort: 80
+          protocol: TCP
+          name: http
 
-    # ─── CONTAINER-LEVEL SECURITY CONTEXT ─────────────────────────────────────
-    securityContext:
-      # Prevents the container from gaining additional privileges via setuid/setgid
-      # binaries or the NO_NEW_PRIVS prctl flag. Hardened systems should always
-      # set this to false (deny privilege escalation).
-      allowPrivilegeEscalation: false
+      # ─── CONTAINER-LEVEL SECURITY CONTEXT ─────────────────────────────────────
+      securityContext:
+        # Prevents the container from gaining additional privileges via setuid/setgid
+        # binaries or the NO_NEW_PRIVS prctl flag. Hardened systems should always
+        # set this to false (deny privilege escalation).
+        allowPrivilegeEscalation: false
 
-      # Makes the container's root filesystem read-only at the kernel level.
-      # Prevents an attacker who gains code execution from modifying the binary,
-      # installing tools, or writing malware to disk. Any writes must go to
-      # explicitly declared volumes (emptyDir, PVC, etc.).
-      readOnlyRootFilesystem: true
+        # Makes the container's root filesystem read-only at the kernel level.
+        # Prevents an attacker who gains code execution from modifying the binary,
+        # installing tools, or writing malware to disk. Any writes must go to
+        # explicitly declared volumes (emptyDir, PVC, etc.).
+        readOnlyRootFilesystem: true
 
-      # Drop ALL Linux capabilities. By default, containers inherit a set of ~14
-      # capabilities (NET_RAW, CHOWN, SETUID, etc.). Dropping all of them and
-      # adding back only what's needed reduces attack surface dramatically.
-      capabilities:
-        drop:
-        - ALL
-        # Note: nginx:alpine is compiled to use port 80 (requires NET_BIND_SERVICE
-        # if running as non-root). To avoid this, configure nginx to listen on
-        # port 8080 and remove this capability entirely.
-        add:
-        - NET_BIND_SERVICE
+        # Drop ALL Linux capabilities. By default, containers inherit a set of ~14
+        # capabilities (NET_RAW, CHOWN, SETUID, etc.). Dropping all of them and
+        # adding back only what's needed reduces attack surface dramatically.
+        capabilities:
+          drop:
+            - ALL
+          # Note: nginx:alpine is compiled to use port 80 (requires NET_BIND_SERVICE
+          # if running as non-root). To avoid this, configure nginx to listen on
+          # port 8080 and remove this capability entirely.
+          add:
+            - NET_BIND_SERVICE
 
-    # ─── RESOURCE MANAGEMENT ──────────────────────────────────────────────────
-    resources:
-      requests:
-        # The scheduler uses requests to find a node with sufficient capacity.
-        # Set requests to the typical (P50) consumption of the container.
-        memory: "128Mi"
-        cpu: "100m"     # 100 millicores = 0.1 vCPU
-      limits:
-        # Memory limit == memory request → Guaranteed QoS class.
-        # This protects the Pod from OOM eviction by giving it the highest eviction
-        # priority. The container is OOM-killed if it exceeds this limit.
-        memory: "128Mi"
-        # CPU limit is intentionally OMITTED.
-        # CPU is a compressible resource: exceeding the limit causes throttling,
-        # not termination. CPU throttling degrades latency without warning.
-        # Monitor cpu_throttled_seconds_total in Prometheus to detect issues.
+      # ─── RESOURCE MANAGEMENT ──────────────────────────────────────────────────
+      resources:
+        requests:
+          # The scheduler uses requests to find a node with sufficient capacity.
+          # Set requests to the typical (P50) consumption of the container.
+          memory: "128Mi"
+          cpu: "100m"     # 100 millicores = 0.1 vCPU
+        limits:
+          # Memory limit == memory request → Guaranteed QoS class.
+          # This protects the Pod from OOM eviction by giving it the highest eviction
+          # priority. The container is OOM-killed if it exceeds this limit.
+          memory: "128Mi"
+          # CPU limit is intentionally OMITTED.
+          # CPU is a compressible resource: exceeding the limit causes throttling,
+          # not termination. CPU throttling degrades latency without warning.
+          # Monitor cpu_throttled_seconds_total in Prometheus to detect issues.
 
-    # ─── VOLUME MOUNTS ────────────────────────────────────────────────────────
-    # Mount the emptyDir volumes at the paths nginx needs to write to.
-    # Without these, nginx fails to start with "permission denied" errors because
-    # readOnlyRootFilesystem prevents writing to the image's own directories.
-    volumeMounts:
-    - name: nginx-tmp
-      mountPath: /tmp
-    - name: nginx-run
-      mountPath: /var/run
-    - name: nginx-cache
-      mountPath: /var/cache/nginx
+      # ─── VOLUME MOUNTS ────────────────────────────────────────────────────────
+      # Mount the emptyDir volumes at the paths nginx needs to write to.
+      # Without these, nginx fails to start with "permission denied" errors because
+      # readOnlyRootFilesystem prevents writing to the image's own directories.
+      volumeMounts:
+        - name: nginx-tmp
+          mountPath: /tmp
+        - name: nginx-run
+          mountPath: /var/run
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
 
-    # ─── LIFECYCLE HOOKS ──────────────────────────────────────────────────────
-    lifecycle:
-      preStop:
-        exec:
-          # Sleep for 5 seconds before nginx receives SIGTERM.
-          # This gives the Endpoints controller time to remove this Pod's IP from
-          # the Service's EndpointSlice, so the load balancer stops sending new
-          # requests here before nginx starts shutting down.
-          # Without this, in-flight requests at the load balancer level may still
-          # be routed to this Pod after it has begun terminating.
-          command: ["/bin/sh", "-c", "sleep 5"]
+      # ─── LIFECYCLE HOOKS ──────────────────────────────────────────────────────
+      lifecycle:
+        preStop:
+          exec:
+            # Sleep for 5 seconds before nginx receives SIGTERM.
+            # This gives the Endpoints controller time to remove this Pod's IP from
+            # the Service's EndpointSlice, so the load balancer stops sending new
+            # requests here before nginx starts shutting down.
+            # Without this, in-flight requests at the load balancer level may still
+            # be routed to this Pod after it has begun terminating.
+            command: ["/bin/sh", "-c", "sleep 5"]
 
-    # ─── PROBES ───────────────────────────────────────────────────────────────
-    # Note: For a basic pod demo, only a simple liveness probe is included.
-    # The nginx-deployment.yml shows the full startup + readiness + liveness set.
-    livenessProbe:
-      httpGet:
-        path: /
-        port: 80
-      # Wait 10 seconds after container start before the first probe attempt.
-      # Prevents false-positive restarts during image initialization.
-      initialDelaySeconds: 10
-      # Run the probe every 15 seconds.
-      periodSeconds: 15
-      # Require 3 consecutive failures before restarting the container.
-      # A single transient failure should not cause a restart.
-      failureThreshold: 3
-      # A probe must respond within 3 seconds or it's considered failed.
-      timeoutSeconds: 3
+      # ─── PROBES ───────────────────────────────────────────────────────────────
+      # Note: For a basic pod demo, only a simple liveness probe is included.
+      # The nginx-deployment.yml shows the full startup + readiness + liveness set.
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 80
+        # Wait 10 seconds after container start before the first probe attempt.
+        # Prevents false-positive restarts during image initialization.
+        initialDelaySeconds: 10
+        # Run the probe every 15 seconds.
+        periodSeconds: 15
+        # Require 3 consecutive failures before restarting the container.
+        # A single transient failure should not cause a restart.
+        failureThreshold: 3
+        # A probe must respond within 3 seconds or it's considered failed.
+        timeoutSeconds: 3

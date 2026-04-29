@@ -23,7 +23,7 @@ kind: Kustomization
 # Point to the base manifests directory.
 # All resources defined in the base are inherited by this overlay.
 resources:
-- ../../base
+  - ../../base
 
 # ─── NAMESPACE ───────────────────────────────────────────────────────────────
 # Kustomize sets this namespace on ALL resources from the base that don't already
@@ -40,25 +40,25 @@ namespace: dev
 # Patch the replica count without a separate patch file.
 # The `replicas` field in kustomization.yaml is the idiomatic way to set replicas.
 replicas:
-- name: nginx       # Must match metadata.name in the base Deployment
-  count: 1
+  - name: nginx       # Must match metadata.name in the base Deployment
+    count: 1
 
 # ─── IMAGE OVERRIDE ──────────────────────────────────────────────────────────
 # Override the container image tag for this environment.
 # `newName` and `newTag` can be set independently.
 # In CI, this is updated by: kustomize edit set image nginx=nginx:latest
 images:
-- name: nginx           # Matches the image name in the base (without tag)
-  newTag: latest        # Dev uses latest for rapid iteration; pin in staging/prod
+  - name: nginx           # Matches the image name in the base (without tag)
+    newTag: latest        # Dev uses latest for rapid iteration; pin in staging/prod
 
 # ─── PATCHES ─────────────────────────────────────────────────────────────────
 # Strategic merge patches: Kubernetes merges these with the base manifest.
 # A strategic merge patch only overrides the fields it specifies.
 patches:
-- path: patch-resources.yaml
-  target:
-    kind: Deployment
-    name: nginx
+  - path: patch-resources.yaml
+    target:
+      kind: Deployment
+      name: nginx
 
 # ─── COMMON LABELS ───────────────────────────────────────────────────────────
 # Add environment-specific label to all resources.

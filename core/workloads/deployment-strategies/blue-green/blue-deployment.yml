@@ -14,7 +14,7 @@ metadata:
     # This is for operational clarity — it doesn't directly affect traffic routing.
     slot: blue
   annotations:
-    kubernetes.io/description: "Blue deployment (v1 — nginx:1.24) — current production. Traffic is served from blue until the service selector is switched to green."
+    kubernetes.io/description: "Blue deployment (nginx:1.24) — production. Switch service selector to green to redirect traffic."
 spec:
   replicas: 4
 
@@ -63,64 +63,64 @@ spec:
           type: RuntimeDefault
 
       containers:
-      - name: nginx
-        # v1 image — the current production version.
-        image: nginx:1.24
-        imagePullPolicy: IfNotPresent
+        - name: nginx
+          # v1 image — the current production version.
+          image: nginx:1.24
+          imagePullPolicy: IfNotPresent
 
-        ports:
-        - name: http
-          containerPort: 8080
-          protocol: TCP
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
 
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
 
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
 
-        lifecycle:
-          preStop:
-            exec:
-              command: ["/bin/sh", "-c", "sleep 5"]
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
 
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
 
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 3
-          failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
 
-        volumeMounts:
-        - name: nginx-cache
-          mountPath: /var/cache/nginx
-        - name: nginx-run
-          mountPath: /var/run
-        - name: tmp
-          mountPath: /tmp
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
 
       volumes:
-      - name: nginx-cache
-        emptyDir: {}
-      - name: nginx-run
-        emptyDir: {}
-      - name: tmp
-        emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

@@ -12,7 +12,7 @@ metadata:
     app.kubernetes.io/managed-by: kubectl
     track: stable
   annotations:
-    kubernetes.io/description: "Stable v1 deployment (nginx:1.24) — serves 80% of traffic with 4 replicas. The canary deployment serves the remaining 20% with 1 replica."
+    kubernetes.io/description: "Stable v1 (nginx:1.24) — serves 80% of traffic with 4 replicas; canary serves 20% with 1 replica."
 spec:
   # 4 replicas = 4/(4+1) = 80% of traffic when canary has 1 replica.
   # The traffic split is determined by the ratio of Ready pods across both deployments.
@@ -62,63 +62,63 @@ spec:
           type: RuntimeDefault
 
       containers:
-      - name: nginx
-        image: nginx:1.24
-        imagePullPolicy: IfNotPresent
+        - name: nginx
+          image: nginx:1.24
+          imagePullPolicy: IfNotPresent
 
-        ports:
-        - name: http
-          containerPort: 8080
-          protocol: TCP
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
 
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
 
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
 
-        lifecycle:
-          preStop:
-            exec:
-              command: ["/bin/sh", "-c", "sleep 5"]
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
 
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
 
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 3
-          failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
 
-        volumeMounts:
-        - name: nginx-cache
-          mountPath: /var/cache/nginx
-        - name: nginx-run
-          mountPath: /var/run
-        - name: tmp
-          mountPath: /tmp
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
 
       volumes:
-      - name: nginx-cache
-        emptyDir: {}
-      - name: nginx-run
-        emptyDir: {}
-      - name: tmp
-        emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

@@ -65,21 +65,21 @@ spec:
 
   # ─── VOLUMES ─────────────────────────────────────────────────────────────────
   volumes:
-  # This is the KEY volume in the sidecar pattern.
-  # Both containers mount it: nginx writes logs here; the sidecar reads them.
-  # emptyDir is created when the Pod is assigned to a node and deleted when
-  # the Pod is removed — it is NOT persisted across Pod restarts.
-  - name: shared-logs
-    emptyDir: {}
+    # This is the KEY volume in the sidecar pattern.
+    # Both containers mount it: nginx writes logs here; the sidecar reads them.
+    # emptyDir is created when the Pod is assigned to a node and deleted when
+    # the Pod is removed — it is NOT persisted across Pod restarts.
+    - name: shared-logs
+      emptyDir: {}
 
-  # nginx requires these writable directories because readOnlyRootFilesystem: true
-  # prevents writes to the container's own filesystem.
-  - name: nginx-tmp
-    emptyDir: {}
-  - name: nginx-run
-    emptyDir: {}
-  - name: nginx-cache
-    emptyDir: {}
+    # nginx requires these writable directories because readOnlyRootFilesystem: true
+    # prevents writes to the container's own filesystem.
+    - name: nginx-tmp
+      emptyDir: {}
+    - name: nginx-run
+      emptyDir: {}
+    - name: nginx-cache
+      emptyDir: {}
 
   # ─── CONTAINERS ──────────────────────────────────────────────────────────────
   # Both containers start in PARALLEL (unlike init containers, which are sequential).
@@ -87,153 +87,153 @@ spec:
   # If either container exits, the Pod's restartPolicy applies.
   containers:
 
-  # ── Main Container: nginx ─────────────────────────────────────────────────
-  # nginx is configured to write access logs to the shared volume instead of
-  # its default stdout. In a production scenario you would mount a ConfigMap
-  # with a custom nginx.conf that sets: access_log /var/log/nginx/access.log;
-  - name: nginx
-    image: nginx:1.25-alpine
+    # ── Main Container: nginx ─────────────────────────────────────────────────
+    # nginx is configured to write access logs to the shared volume instead of
+    # its default stdout. In a production scenario you would mount a ConfigMap
+    # with a custom nginx.conf that sets: access_log /var/log/nginx/access.log;
+    - name: nginx
+      image: nginx:1.25-alpine
 
-    ports:
-    - containerPort: 80
-      protocol: TCP
-      name: http
+      ports:
+        - containerPort: 80
+          protocol: TCP
+          name: http
 
-    # Override nginx's default command to write logs to the shared volume.
-    # nginx's default access_log is /var/log/nginx/access.log — we just need
-    # to ensure that path is writable (handled by the shared-logs volume mount).
-    # In production, use a ConfigMap-mounted nginx.conf for configuration.
-    command:
-    - "/bin/sh"
-    - "-c"
-    - |
-      # Ensure the log directory exists (it's an emptyDir mount, so it starts empty)
-      mkdir -p /var/log/nginx
-      # Start nginx in the foreground; logs go to /var/log/nginx/access.log
-      # via nginx's default configuration pointing access_log there.
-      nginx -g "daemon off;"
+      # Override nginx's default command to write logs to the shared volume.
+      # nginx's default access_log is /var/log/nginx/access.log — we just need
+      # to ensure that path is writable (handled by the shared-logs volume mount).
+      # In production, use a ConfigMap-mounted nginx.conf for configuration.
+      command:
+        - "/bin/sh"
+        - "-c"
+        - |
+          # Ensure the log directory exists (it's an emptyDir mount, so it starts empty)
+          mkdir -p /var/log/nginx
+          # Start nginx in the foreground; logs go to /var/log/nginx/access.log
+          # via nginx's default configuration pointing access_log there.
+          nginx -g "daemon off;"
 
-    # ── Container Security Context ────────────────────────────────────────────
-    securityContext:
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      capabilities:
-        drop:
-        - ALL
-        add:
-        - NET_BIND_SERVICE
+      # ── Container Security Context ────────────────────────────────────────────
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+          add:
+            - NET_BIND_SERVICE
 
-    resources:
-      requests:
-        memory: "128Mi"
-        cpu: "100m"
-      limits:
-        memory: "128Mi"
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "128Mi"
 
-    volumeMounts:
-    # The shared volume where nginx writes its access logs.
-    # The sidecar reads from this same path.
-    - name: shared-logs
-      mountPath: /var/log/nginx
+      volumeMounts:
+        # The shared volume where nginx writes its access logs.
+        # The sidecar reads from this same path.
+        - name: shared-logs
+          mountPath: /var/log/nginx
 
-    # nginx's required writable system directories
-    - name: nginx-tmp
-      mountPath: /tmp
-    - name: nginx-run
-      mountPath: /var/run
-    - name: nginx-cache
-      mountPath: /var/cache/nginx
+        # nginx's required writable system directories
+        - name: nginx-tmp
+          mountPath: /tmp
+        - name: nginx-run
+          mountPath: /var/run
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
 
-    lifecycle:
-      preStop:
-        exec:
-          command: ["/bin/sh", "-c", "sleep 5"]
+      lifecycle:
+        preStop:
+          exec:
+            command: ["/bin/sh", "-c", "sleep 5"]
 
-    readinessProbe:
-      httpGet:
-        path: /
-        port: 80
-      initialDelaySeconds: 5
-      periodSeconds: 10
-      failureThreshold: 3
-      timeoutSeconds: 3
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 80
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+        timeoutSeconds: 3
 
-    livenessProbe:
-      httpGet:
-        path: /
-        port: 80
-      initialDelaySeconds: 10
-      periodSeconds: 15
-      failureThreshold: 3
-      timeoutSeconds: 3
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 80
+        initialDelaySeconds: 10
+        periodSeconds: 15
+        failureThreshold: 3
+        timeoutSeconds: 3
 
-  # ── Sidecar Container: log-forwarder ─────────────────────────────────────
-  # This container runs IN PARALLEL with nginx, tailing the access log file
-  # and writing it to its own stdout. The container runtime (containerd) then
-  # collects the stdout and makes it available via `kubectl logs`.
-  #
-  # In production you would replace this busybox tail with:
-  #   - Fluentd: parses nginx log format, ships to Elasticsearch/Splunk
-  #   - Vector: high-performance log router, ships to Loki/Datadog/S3
-  #   - Filebeat: Elastic stack log shipper
-  #   - Fluent Bit: lightweight, ships to any sink
-  - name: log-forwarder
-    image: busybox:1.36
+    # ── Sidecar Container: log-forwarder ─────────────────────────────────────
+    # This container runs IN PARALLEL with nginx, tailing the access log file
+    # and writing it to its own stdout. The container runtime (containerd) then
+    # collects the stdout and makes it available via `kubectl logs`.
+    #
+    # In production you would replace this busybox tail with:
+    #   - Fluentd: parses nginx log format, ships to Elasticsearch/Splunk
+    #   - Vector: high-performance log router, ships to Loki/Datadog/S3
+    #   - Filebeat: Elastic stack log shipper
+    #   - Fluent Bit: lightweight, ships to any sink
+    - name: log-forwarder
+      image: busybox:1.36
 
-    # `tail -F` follows the file even if it is rotated (vs. `tail -f` which
-    # follows the file descriptor). `-F` is correct for log rotation scenarios.
-    # The sidecar writes each log line to ITS OWN stdout, which kubectl logs
-    # can then display with: kubectl logs <pod> -c log-forwarder
-    command:
-    - "/bin/sh"
-    - "-c"
-    - |
-      echo "Log forwarder sidecar started. Waiting for log file..."
-      # Wait for nginx to create the log file before tailing it.
-      # This is a simple startup race condition handled with a loop.
-      until [ -f /var/log/nginx/access.log ]; do
-        echo "Waiting for /var/log/nginx/access.log to be created..."
-        sleep 1
-      done
-      echo "Log file found. Starting tail..."
-      # In a production Fluentd/Vector setup, you would configure the log parser
-      # here to parse nginx's combined log format and add Kubernetes metadata
-      # (namespace, pod name, node) as structured fields.
-      exec tail -F /var/log/nginx/access.log
+      # `tail -F` follows the file even if it is rotated (vs. `tail -f` which
+      # follows the file descriptor). `-F` is correct for log rotation scenarios.
+      # The sidecar writes each log line to ITS OWN stdout, which kubectl logs
+      # can then display with: kubectl logs <pod> -c log-forwarder
+      command:
+        - "/bin/sh"
+        - "-c"
+        - |
+          echo "Log forwarder sidecar started. Waiting for log file..."
+          # Wait for nginx to create the log file before tailing it.
+          # This is a simple startup race condition handled with a loop.
+          until [ -f /var/log/nginx/access.log ]; do
+            echo "Waiting for /var/log/nginx/access.log to be created..."
+            sleep 1
+          done
+          echo "Log file found. Starting tail..."
+          # In a production Fluentd/Vector setup, you would configure the log parser
+          # here to parse nginx's combined log format and add Kubernetes metadata
+          # (namespace, pod name, node) as structured fields.
+          exec tail -F /var/log/nginx/access.log
 
-    # ── Sidecar Security Context ──────────────────────────────────────────────
-    # The sidecar must also meet production security standards.
-    # It only needs READ access to the shared log volume — readOnly: true on the
-    # volumeMount prevents the sidecar from accidentally modifying nginx logs.
-    securityContext:
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      capabilities:
-        drop:
-        - ALL
+      # ── Sidecar Security Context ──────────────────────────────────────────────
+      # The sidecar must also meet production security standards.
+      # It only needs READ access to the shared log volume — readOnly: true on the
+      # volumeMount prevents the sidecar from accidentally modifying nginx logs.
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
 
-    resources:
-      requests:
-        # A log-tailing sidecar is very lightweight
-        memory: "32Mi"
-        cpu: "50m"
-      limits:
-        memory: "32Mi"
-        # No CPU limit on the sidecar either — log forwarding should not be throttled
+      resources:
+        requests:
+          # A log-tailing sidecar is very lightweight
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "32Mi"
+          # No CPU limit on the sidecar either — log forwarding should not be throttled
 
-    volumeMounts:
-    # The sidecar READS the shared log volume. Mount as readOnly for least privilege.
-    # Writing to the log directory should only be done by nginx.
-    - name: shared-logs
-      mountPath: /var/log/nginx
-      readOnly: true
+      volumeMounts:
+        # The sidecar READS the shared log volume. Mount as readOnly for least privilege.
+        # Writing to the log directory should only be done by nginx.
+        - name: shared-logs
+          mountPath: /var/log/nginx
+          readOnly: true
 
-    # Graceful shutdown for the sidecar:
-    # When the Pod is deleted, both containers receive SIGTERM simultaneously.
-    # The sidecar should flush any buffered log entries before exiting.
-    # In a real Fluentd sidecar you would send SIGTERM to Fluentd's main process
-    # which triggers its graceful flush. Here, `tail` exits immediately on SIGTERM.
-    lifecycle:
-      preStop:
-        exec:
-          command: ["/bin/sh", "-c", "sleep 5"]
+      # Graceful shutdown for the sidecar:
+      # When the Pod is deleted, both containers receive SIGTERM simultaneously.
+      # The sidecar should flush any buffered log entries before exiting.
+      # In a real Fluentd sidecar you would send SIGTERM to Fluentd's main process
+      # which triggers its graceful flush. Here, `tail` exits immediately on SIGTERM.
+      lifecycle:
+        preStop:
+          exec:
+            command: ["/bin/sh", "-c", "sleep 5"]

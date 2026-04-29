@@ -23,26 +23,26 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-- ../../base
+  - ../../base
 
 namespace: staging
 
 replicas:
-- name: nginx
-  count: 2
+  - name: nginx
+    count: 2
 
 images:
-- name: nginx
-  # Pin to the same minor version as production.
-  # Avoid using digest in staging to allow automatic minor patch updates.
-  # In production, always pin to a digest.
-  newTag: "1.25"
+  - name: nginx
+    # Pin to the same minor version as production.
+    # Avoid using digest in staging to allow automatic minor patch updates.
+    # In production, always pin to a digest.
+    newTag: "1.25"
 
 patches:
-- path: patch-resources.yaml
-  target:
-    kind: Deployment
-    name: nginx
+  - path: patch-resources.yaml
+    target:
+      kind: Deployment
+      name: nginx
 
 commonLabels:
   environment: staging

@@ -96,6 +96,7 @@ jobs:
               ! -path './setup/*' \
               ! -path './helm/*' \
               ! -path './.github/*' \
+              ! -path '*/kustomize/overlays/*' \
             | sort
           )
           if [ -z "$MANIFEST_FILES" ]; then

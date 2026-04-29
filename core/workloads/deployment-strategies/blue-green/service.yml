@@ -42,7 +42,7 @@ spec:
     version: v1   # CHANGE TO v2 TO SWITCH TRAFFIC TO GREEN
 
   ports:
-  - name: http
-    port: 80
-    targetPort: 8080
-    protocol: TCP
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP

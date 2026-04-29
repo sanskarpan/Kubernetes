@@ -72,72 +72,72 @@ spec:
           type: RuntimeDefault
 
       containers:
-      - name: nginx
-        # v1 image — change to nginx:1.25 to trigger the Recreate strategy.
-        image: nginx:1.24
-        imagePullPolicy: IfNotPresent
+        - name: nginx
+          # v1 image — change to nginx:1.25 to trigger the Recreate strategy.
+          image: nginx:1.24
+          imagePullPolicy: IfNotPresent
 
-        ports:
-        - name: http
-          containerPort: 8080   # Non-privileged port — required for runAsNonRoot
-          protocol: TCP
+          ports:
+            - name: http
+              containerPort: 8080   # Non-privileged port — required for runAsNonRoot
+              protocol: TCP
 
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
 
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
 
-        lifecycle:
-          preStop:
-            exec:
-              # Give NGINX time to finish processing in-flight requests before shutdown.
-              # With Recreate, this is less critical (we want downtime to be brief),
-              # but it's still good practice to drain gracefully.
-              command: ["/bin/sh", "-c", "sleep 5"]
+          lifecycle:
+            preStop:
+              exec:
+                # Give NGINX time to finish processing in-flight requests before shutdown.
+                # With Recreate, this is less critical (we want downtime to be brief),
+                # but it's still good practice to drain gracefully.
+                command: ["/bin/sh", "-c", "sleep 5"]
 
-        # readinessProbe determines when a pod is added to the Service endpoint list.
-        # With Recreate, readiness still matters — minReadySeconds requires the pod
-        # to be Ready for N seconds before the deployment is considered 'available'.
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
+          # readinessProbe determines when a pod is added to the Service endpoint list.
+          # With Recreate, readiness still matters — minReadySeconds requires the pod
+          # to be Ready for N seconds before the deployment is considered 'available'.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
 
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 3
-          failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
 
-        volumeMounts:
-        - name: nginx-cache
-          mountPath: /var/cache/nginx
-        - name: nginx-run
-          mountPath: /var/run
-        - name: tmp
-          mountPath: /tmp
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
 
       volumes:
-      # NGINX needs to write to /var/cache/nginx and /var/run when readOnlyRootFilesystem: true.
-      # We provide emptyDir volumes for these paths.
-      - name: nginx-cache
-        emptyDir: {}
-      - name: nginx-run
-        emptyDir: {}
-      - name: tmp
-        emptyDir: {}
+        # NGINX needs to write to /var/cache/nginx and /var/run when readOnlyRootFilesystem: true.
+        # We provide emptyDir volumes for these paths.
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
