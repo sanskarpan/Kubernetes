@@ -1,0 +1,101 @@
+---
+# Kyverno ClusterPolicy: disallow-latest-tag
+#
+# Rejects pods using the ':latest' image tag or images with no tag
+# (which also resolves to :latest).
+#
+# Rationale:
+#   :latest is mutable — the same tag can point to different images over time.
+#   This makes deployments non-reproducible and rollbacks unreliable.
+#   Pin images to exact versions (e.g., nginx:1.25.3) or SHA256 digests
+#   (e.g., nginx@sha256:abc123...) for true immutability.
+#
+# Safe to enforce immediately — this should be Enforce, not Audit.
+# Exceptions: CI/CD runners and test namespaces may be excluded.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  labels:
+    app.kubernetes.io/name: disallow-latest-tag
+    app.kubernetes.io/component: policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Disallows container images tagged with :latest or missing a tag entirely.
+      Requires pinned image tags for reproducible deployments.
+    policies.kyverno.io/title: Disallow Latest Image Tag
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+spec:
+  # Safe to Enforce immediately — this rarely causes false positives
+  validationFailureAction: Enforce
+
+  background: true
+
+  rules:
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+      validate:
+        message: >
+          Image '{{ request.object.spec.containers[0].image }}' uses the ':latest' tag
+          or has no tag. Specify an explicit version tag (e.g., nginx:1.25.3) or
+          use a SHA256 digest (e.g., nginx@sha256:abc...) for immutable deployments.
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  # Deny images with :latest tag
+                  - key: "{{ element.image }}"
+                    operator: Equals
+                    value: "*:latest"
+                  # Deny images with no tag (implicitly :latest)
+                  - key: "{{ element.image }}"
+                    operator: NotContains
+                    value: ":"
+
+    - name: require-image-tag-init-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+      preconditions:
+        any:
+          - key: "{{ request.object.spec.initContainers[] | length(@) }}"
+            operator: GreaterThanOrEquals
+            value: 1
+      validate:
+        message: >
+          Init container image uses ':latest' tag or has no tag.
+          Use pinned versions for reproducible deployments.
+        foreach:
+          - list: "request.object.spec.initContainers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: Equals
+                    value: "*:latest"
+                  - key: "{{ element.image }}"
+                    operator: NotContains
+                    value: ":"

@@ -1,0 +1,76 @@
+---
+# Kyverno ClusterPolicy: require-liveness-readiness-probes
+#
+# Requires all containers in Deployments to define both livenessProbe
+# and readinessProbe.
+#
+# Rationale:
+#   - Without readinessProbe: traffic is sent to pods that aren't ready yet,
+#     causing errors during rollouts and restarts.
+#   - Without livenessProbe: a deadlocked pod continues receiving traffic
+#     forever and is never restarted automatically.
+#
+# Note on probe design:
+#   - readinessProbe: must NOT check external dependencies (DB, APIs).
+#     A failing dependency marks the pod not-ready and cascades failures.
+#   - livenessProbe: use a simple local endpoint (/healthz) that always
+#     returns 200 unless the process is deadlocked.
+#   - Use DIFFERENT endpoints for liveness and readiness to avoid
+#     simultaneous detach-and-delete behavior.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-liveness-readiness-probes
+  labels:
+    app.kubernetes.io/name: require-liveness-readiness-probes
+    app.kubernetes.io/component: policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Requires all containers in Deployments and StatefulSets to define
+      both livenessProbe and readinessProbe for reliable health management.
+    policies.kyverno.io/title: Require Liveness and Readiness Probes
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Deployment,StatefulSet
+spec:
+  # Start in Audit — switch to Enforce after reviewing reports
+  validationFailureAction: Audit
+
+  background: true
+
+  rules:
+    - name: require-probes-in-deployments
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+                - cert-manager
+      validate:
+        message: >
+          All containers must define both livenessProbe and readinessProbe.
+          Without readinessProbe: traffic reaches unready pods during rollouts.
+          Without livenessProbe: deadlocked pods never restart automatically.
+          Use different endpoints for each probe to avoid simultaneous pod termination.
+        foreach:
+          - list: "request.object.spec.template.spec.containers"
+            deny:
+              conditions:
+                any:
+                  # Deny if livenessProbe is missing
+                  - key: livenessProbe
+                    operator: NotIn
+                    value: "{{ element.keys(@) }}"
+                  # Deny if readinessProbe is missing
+                  - key: readinessProbe
+                    operator: NotIn
+                    value: "{{ element.keys(@) }}"

@@ -1,0 +1,90 @@
+---
+# Kyverno ClusterPolicy: require-non-root
+#
+# Ensures no container runs as root (UID 0).
+# This policy checks both pod-level and container-level securityContext.
+#
+# Rollout strategy:
+#   1. Deploy in Audit mode — review violations without blocking
+#   2. Fix violations in workloads
+#   3. Switch to Enforce
+#
+# Test compliance:
+#   kubectl get policyreport -A
+#   kubectl describe clusterpolicyreport
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root
+  labels:
+    app.kubernetes.io/name: require-non-root
+    app.kubernetes.io/component: policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Requires all containers to run as a non-root user.
+      Containers running as root can modify host files and escape container isolation.
+    policies.kyverno.io/title: Require Non-Root Containers
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  # Start with Audit. Switch to Enforce once all workloads comply.
+  validationFailureAction: Audit
+
+  # Apply to all namespaces except system namespaces
+  background: true
+
+  rules:
+    - name: check-runAsNonRoot
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+                - cert-manager
+      validate:
+        message: >
+          Containers must not run as root. Set securityContext.runAsNonRoot: true
+          and securityContext.runAsUser to a non-zero UID (e.g., 1000).
+        anyPattern:
+          # Option 1: Pod-level runAsNonRoot
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+          # Option 2: All containers have container-level runAsNonRoot
+          - spec:
+              containers:
+                - securityContext:
+                    runAsNonRoot: true
+
+    - name: check-runAsUser-not-zero
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+                - cert-manager
+      validate:
+        message: >
+          runAsUser must not be 0 (root). Use a non-zero UID such as 1000.
+        deny:
+          conditions:
+            any:
+              # Deny if pod-level runAsUser is 0
+              - key: "{{ request.object.spec.securityContext.runAsUser }}"
+                operator: Equals
+                value: 0
