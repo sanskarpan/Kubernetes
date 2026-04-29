@@ -1,0 +1,137 @@
+# ==============================================================================
+# LoadBalancer Service — Cloud / Production External Access
+# ==============================================================================
+# LoadBalancer extends NodePort by requesting that the cloud provider's Cloud
+# Controller Manager (CCM) provision an external load balancer. The LB's public
+# IP or hostname is populated into status.loadBalancer.ingress[].ip/hostname.
+#
+# On bare-metal clusters (no cloud CCM), use MetalLB:
+#   https://metallb.universe.tf/
+# MetalLB implements the LoadBalancer spec using BGP or Layer 2 ARP.
+#
+# COST AWARENESS:
+#   Each LoadBalancer Service provisions a SEPARATE cloud load balancer, which
+#   incurs hourly and data-transfer charges. For HTTP/HTTPS traffic, strongly
+#   prefer a single Ingress Controller (which uses one LoadBalancer) with
+#   multiple Ingress resources routing to different Services. Only use per-
+#   service LoadBalancers for non-HTTP protocols (raw TCP, UDP, etc.).
+#
+# AWS NLB vs ALB:
+#   - Default AWS LB type for a LoadBalancer Service is a Classic LB (CLB),
+#     which is deprecated. Use the annotation below to request an NLB instead.
+#   - For HTTP/HTTPS with advanced routing, use an ALB via the AWS Load Balancer
+#     Controller and an Ingress resource, NOT a LoadBalancer Service.
+#
+# After applying, check the provisioned LB:
+#   kubectl get svc nginx-loadbalancer -n networking-demo
+#   kubectl describe svc nginx-loadbalancer -n networking-demo
+#   # Wait for EXTERNAL-IP to change from <pending> to an actual IP/hostname.
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-loadbalancer
+  namespace: networking-demo
+
+  labels:
+    app.kubernetes.io/name: nginx-loadbalancer
+    app.kubernetes.io/instance: nginx-loadbalancer
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      LoadBalancer Service exposing nginx on ports 80 and 443. Cloud providers
+      provision an external load balancer automatically. On bare-metal clusters,
+      deploy MetalLB first. Each LoadBalancer Service creates one cloud LB;
+      for HTTP/HTTPS workloads, prefer a single Ingress Controller instead.
+
+    # --------------------------------------------------------------------------
+    # AWS-Specific Annotations (comment out if not using AWS)
+    # --------------------------------------------------------------------------
+
+    # Request a Network Load Balancer (NLB) instead of the deprecated Classic LB.
+    # NLB operates at Layer 4 (TCP/UDP), supports static IPs, and handles
+    # millions of requests per second with ultra-low latency.
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+
+    # Request an internal NLB (not internet-facing). Use for LBs that only need
+    # to be reached from within the VPC or via VPN/Direct Connect.
+    # service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+
+    # Specify which subnets the LB should be deployed into (comma-separated).
+    # service.beta.kubernetes.io/aws-load-balancer-subnets: "subnet-abc123,subnet-def456"
+
+    # Enable cross-zone load balancing so the NLB distributes traffic evenly
+    # across AZs even if pods are unevenly distributed.
+    # service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+
+    # Override the default idle timeout (in seconds). CLB/NLB default: 60s.
+    # service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "120"
+
+    # --------------------------------------------------------------------------
+    # GCP-Specific Annotations (comment out if not using GCP)
+    # --------------------------------------------------------------------------
+
+    # Request an internal passthrough NLB (regional). Traffic stays inside VPC.
+    # networking.gke.io/load-balancer-type: "Internal"
+
+    # --------------------------------------------------------------------------
+    # MetalLB Annotations (comment out if not using MetalLB)
+    # --------------------------------------------------------------------------
+
+    # Request a specific IP address from a MetalLB address pool.
+    # metallb.universe.tf/loadBalancerIPs: "192.168.1.100"
+
+    # Specify which MetalLB address pool to draw from.
+    # metallb.universe.tf/address-pool: "production"
+
+spec:
+  type: LoadBalancer
+
+  selector:
+    app.kubernetes.io/name: nginx
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80              # Port on the external load balancer.
+      targetPort: 80        # Port on the backing pod.
+                            # nodePort is auto-assigned; you can pin it if needed
+                            # (e.g., for firewall rules on the nodes themselves).
+
+    - name: https
+      protocol: TCP
+      port: 443             # TLS termination can happen at the LB or at the pod.
+      targetPort: 443       # If terminating TLS in-cluster, configure the pod to
+                            # handle HTTPS. If at the LB, targetPort could be 80.
+
+  # externalTrafficPolicy: Local preserves the original client IP in the pod.
+  # The receiving node only routes to pods ON THAT NODE. Cloud LBs health-check
+  # each node and only send traffic to nodes that have at least one backing pod.
+  # This requires the cloud LB to support node-level health checks (NLB does;
+  # CLB does not reliably). Use Cluster if client IP preservation is not needed.
+  externalTrafficPolicy: Cluster
+
+  # sessionAffinity: ClientIP can help with non-HTTP protocols that have per-
+  # connection state. For HTTP (handled by Ingress), keep None.
+  sessionAffinity: None
+
+  # loadBalancerSourceRanges restricts which CIDR blocks the cloud LB's
+  # security group / firewall rule will accept traffic from. This is NOT a
+  # replacement for NetworkPolicy (which operates inside the cluster), but it
+  # reduces the attack surface at the cloud provider firewall level.
+  # Without this, the default is 0.0.0.0/0 (open to the entire internet).
+  #
+  # Example — restrict to your corporate egress IP and a VPN range:
+  # loadBalancerSourceRanges:
+  #   - "203.0.113.0/24"   # Corporate egress block
+  #   - "10.8.0.0/16"      # VPN subnet
+
+  # allocateLoadBalancerNodePorts (Kubernetes 1.20+)
+  # Set to false to prevent Kubernetes from allocating NodePorts for this
+  # LoadBalancer service. Useful when using a pass-through LB that sends
+  # traffic directly to pod IPs (e.g., GKE NEG, AWS IPVS target groups).
+  # allocateLoadBalancerNodePorts: true
