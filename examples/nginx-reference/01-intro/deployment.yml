@@ -1,0 +1,72 @@
+---
+# Deployment — Manages a ReplicaSet to ensure desired pod count
+# =============================================================
+# A Deployment:
+#   1. Creates a ReplicaSet (which creates and monitors Pods)
+#   2. Ensures the desired number of Pods is always running
+#   3. Handles rolling updates (replaces pods one at a time)
+#   4. Enables rollbacks to previous versions
+#
+# When to use a Deployment vs other controllers:
+#   Deployment     → Stateless applications (nginx, APIs, web apps)
+#   StatefulSet    → Stateful apps that need stable network IDs (databases, Kafka)
+#   DaemonSet      → One pod per node (log shippers, monitoring agents)
+#   Job/CronJob    → Batch tasks that run to completion
+#
+# Apply:    kubectl apply -f deployment.yml
+# Status:   kubectl rollout status deployment/nginx-deployment
+# History:  kubectl rollout history deployment/nginx-deployment
+# Rollback: kubectl rollout undo deployment/nginx-deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.27"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Intro nginx Deployment — 1 replica, basic settings for learning."
+spec:
+  # Number of identical pods to maintain.
+  # The ReplicaSet controller continuously reconciles the actual count to this number.
+  replicas: 1
+
+  # Selector — tells the Deployment which Pods it owns.
+  # IMMUTABLE after creation. Must match .spec.template.metadata.labels.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx
+      app.kubernetes.io/instance: nginx
+
+  # Pod template — the blueprint for creating Pods.
+  # When you update this template, the Deployment rolls out new Pods.
+  template:
+    metadata:
+      # These labels MUST include all labels in selector.matchLabels above.
+      labels:
+        app.kubernetes.io/name: nginx
+        app.kubernetes.io/instance: nginx
+        app.kubernetes.io/version: "1.27"
+        app.kubernetes.io/component: webserver
+        app.kubernetes.io/part-of: nginx
+        app.kubernetes.io/managed-by: kubectl
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 64Mi

@@ -1,0 +1,235 @@
+---
+# Production Baseline Deployment
+# ================================
+# This Deployment demonstrates ALL production security and reliability requirements:
+#
+# Security:
+#   - Pod Security Context: runAsNonRoot, runAsUser, fsGroup, seccompProfile
+#   - Container Security Context: allowPrivilegeEscalation: false,
+#     readOnlyRootFilesystem: true, capabilities drop ALL
+#
+# Reliability:
+#   - Resource requests and limits
+#   - Liveness, readiness, and startup probes
+#   - preStop lifecycle hook for graceful shutdown
+#   - Rolling update with maxUnavailable: 0 (zero-downtime)
+#   - Pod anti-affinity for multi-node HA
+#   - minReadySeconds to prevent premature traffic
+#
+# Labelling:
+#   - Full app.kubernetes.io/* label set on all resources
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.27"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Production-grade nginx Deployment with full security and reliability configuration."
+spec:
+  replicas: 2   # >= 2 for HA; matches PDB minAvailable: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx
+      app.kubernetes.io/instance: nginx
+
+  # Zero-downtime rolling update:
+  # maxUnavailable: 0 — no pods go down until a new pod is Ready
+  # maxSurge: 1       — one extra pod is created above replicas during the update
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  # Retain 5 old ReplicaSets for rollback history
+  revisionHistoryLimit: 5
+
+  # Pod must be Ready for 10s before it counts as Available.
+  # Prevents premature routing during startup transients.
+  minReadySeconds: 10
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx
+        app.kubernetes.io/instance: nginx
+        app.kubernetes.io/version: "1.27"
+        app.kubernetes.io/component: webserver
+        app.kubernetes.io/part-of: nginx
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "Production nginx pod."
+        kubectl.kubernetes.io/default-container: nginx
+    spec:
+      # Dedicated ServiceAccount — never use the default SA
+      serviceAccountName: nginx
+      # Disable API token auto-mount — nginx doesn't need Kubernetes API access
+      automountServiceAccountToken: false
+
+      # -----------------------------------------------------------------------
+      # Pod Security Context — applies to ALL containers
+      # -----------------------------------------------------------------------
+      securityContext:
+        # Prevent any container from running as root (UID 0).
+        # Enforced before the container starts.
+        runAsNonRoot: true
+
+        # Run as UID 101 (the nginx user in the nginx:unprivileged image).
+        # This image is specifically built to run as non-root.
+        runAsUser: 101
+
+        # Set the owning GID for volume mounts.
+        fsGroup: 101
+
+        # Apply the RuntimeDefault seccomp profile.
+        # This allows common syscalls while blocking dangerous ones (e.g., ptrace, unshare).
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Allow 60s for graceful shutdown before SIGKILL
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: nginx
+          # Use nginx:unprivileged — specifically built to run as non-root UID 101.
+          # Standard nginx:1.27 binds to port 80 which requires root (privileged port).
+          # The unprivileged variant listens on port 8080 instead.
+          image: nginxinc/nginx-unprivileged:1.27
+
+          # -----------------------------------------------------------------------
+          # Container Security Context
+          # -----------------------------------------------------------------------
+          securityContext:
+            # Prevent privilege escalation via setuid/setgid binaries or sudo.
+            allowPrivilegeEscalation: false
+
+            # Mount the container root filesystem as read-only.
+            # Any path the process writes to must be backed by an explicit volume.
+            # nginx needs: /tmp, /var/cache/nginx, /var/run, /var/log/nginx
+            readOnlyRootFilesystem: true
+
+            # Drop all Linux capabilities.
+            # The nginx unprivileged image doesn't need any capabilities.
+            capabilities:
+              drop: ["ALL"]
+
+          ports:
+            - name: http
+              # Port 8080 — the nginx unprivileged image listens here (not 80)
+              containerPort: 8080
+              protocol: TCP
+
+          # -----------------------------------------------------------------------
+          # Lifecycle — Graceful Shutdown
+          # -----------------------------------------------------------------------
+          lifecycle:
+            preStop:
+              exec:
+                # 1. Sleep 5s: gives kube-proxy time to remove this pod's endpoint
+                #    from the Service before nginx stops accepting connections.
+                #    Without this, some requests get routed to a pod that is shutting
+                #    down, causing 502 errors in clients.
+                # 2. nginx -s quit: sends a graceful shutdown signal — nginx finishes
+                #    processing in-flight requests before stopping.
+                command: ["/bin/sh", "-c", "sleep 5 && nginx -s quit"]
+
+          # -----------------------------------------------------------------------
+          # Probes
+          # -----------------------------------------------------------------------
+
+          # Startup probe: the container has (30 * 10 = 300s) to start before
+          # the liveness probe takes over. Prevents premature liveness kills.
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            failureThreshold: 30
+            periodSeconds: 10
+
+          # Liveness probe: kills and restarts the container if nginx is hung.
+          # Must be fast and local — does not check external dependencies.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # Readiness probe: removes the pod from Service endpoints if it fails.
+          # Traffic is only sent to pods that pass this probe.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # -----------------------------------------------------------------------
+          # Resources
+          # -----------------------------------------------------------------------
+          resources:
+            requests:
+              cpu: 100m      # 0.1 vCPU — nginx is very efficient
+              memory: 128Mi
+            limits:
+              # CPU limit intentionally omitted to avoid CPU throttling.
+              memory: 128Mi
+
+          # -----------------------------------------------------------------------
+          # Volume Mounts — required by readOnlyRootFilesystem: true
+          # -----------------------------------------------------------------------
+          volumeMounts:
+            # nginx writes temp files here
+            - name: tmp
+              mountPath: /tmp
+            # nginx cache directory
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            # nginx PID file
+            - name: nginx-run
+              mountPath: /var/run
+            # nginx logs (stdout/stderr stream — captured by container runtime)
+            - name: nginx-logs
+              mountPath: /var/log/nginx
+
+      # -----------------------------------------------------------------------
+      # Volumes
+      # -----------------------------------------------------------------------
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-logs
+          emptyDir: {}
+
+      # -----------------------------------------------------------------------
+      # Affinity — Spread Pods Across Nodes
+      # -----------------------------------------------------------------------
+      affinity:
+        podAntiAffinity:
+          # preferredDuringScheduling: best-effort (won't block scheduling if impossible)
+          # For hard HA requirement, use requiredDuringSchedulingIgnoredDuringExecution
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: nginx
+                    app.kubernetes.io/instance: nginx
+                # Spread across different nodes (not just different availability zones)
+                topologyKey: kubernetes.io/hostname

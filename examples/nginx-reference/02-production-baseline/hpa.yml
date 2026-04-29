@@ -1,0 +1,108 @@
+---
+# HorizontalPodAutoscaler — Automatic scaling based on metrics
+# =============================================================
+# The HPA controller queries the Metrics Server for resource utilisation and
+# adjusts the Deployment replica count to maintain target utilisation.
+#
+# Requirements:
+#   - Metrics Server must be installed in the cluster
+#     `kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml`
+#   - Resource REQUESTS must be set on containers (HPA calculates % of requests, not limits)
+#
+# autoscaling/v2 API (GA since Kubernetes 1.23) supports:
+#   - Multiple metrics (CPU + memory + custom)
+#   - Behavior configuration (scale-up/down policies + stabilization windows)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.27"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >-
+      HPA for nginx. Scales between 2–10 replicas based on CPU (70%) and
+      memory (80%) utilisation with conservative scale-down behavior.
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx
+
+  # minReplicas must be >= the PDB minAvailable to avoid a deadlock where
+  # the PDB blocks pod evictions during scale-down.
+  minReplicas: 2
+
+  # maxReplicas should be set based on cluster capacity and cost budget.
+  # Monitor actual scaling events and adjust based on peak load patterns.
+  maxReplicas: 10
+
+  metrics:
+    # CPU utilisation — most common scaling metric.
+    # Scale out when average CPU across all pods exceeds 70% of their requests.
+    # The "70% of requests" threshold means pods have 30% headroom before scaling out.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+    # Memory utilisation — scale out when average memory exceeds 80% of requests.
+    # Memory-based scaling is less reactive (memory doesn't release as quickly as CPU)
+    # but useful as a safety net for memory-hungry workloads.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+  behavior:
+    # -----------------------------------------------------------------------
+    # Scale-Up Behavior — Aggressive (respond quickly to traffic spikes)
+    # -----------------------------------------------------------------------
+    scaleUp:
+      # No stabilization window for scale-up — react immediately.
+      # The metric must be above the threshold for at least this many seconds
+      # before scaling up. 0 = react on the first metric sample above threshold.
+      stabilizationWindowSeconds: 0
+
+      policies:
+        # Policy 1: Add up to 4 pods per 60 seconds.
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+
+        # Policy 2: Double the pod count every 60 seconds.
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+
+      # selectPolicy: Max — use whichever policy allows more pods (most aggressive).
+      # Use Min for more conservative scale-up.
+      selectPolicy: Max
+
+    # -----------------------------------------------------------------------
+    # Scale-Down Behavior — Conservative (prevent oscillation/flapping)
+    # -----------------------------------------------------------------------
+    scaleDown:
+      # Stabilization window — the metric must be below the threshold continuously
+      # for this many seconds before scaling down. 300s = 5 minutes.
+      # Prevents removing pods during a brief traffic lull between spikes.
+      stabilizationWindowSeconds: 300
+
+      policies:
+        # Remove at most 1 pod per 60 seconds during scale-down.
+        # Conservative: gives pods time to gracefully finish requests.
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+
+      # selectPolicy: Min — use the most conservative policy during scale-down.
+      selectPolicy: Min

@@ -1,0 +1,186 @@
+---
+# NetworkPolicy — Default Deny All
+# ==================================
+# This policy denies ALL ingress and egress traffic to/from every pod in the
+# production-baseline namespace by default. This is the zero-trust networking
+# starting point.
+#
+# Once this policy exists, additional NetworkPolicies must explicitly ALLOW
+# each required traffic flow. The union of all matching policies is evaluated —
+# traffic is allowed if ANY matching policy permits it.
+#
+# Requirements:
+#   - A CNI plugin that enforces NetworkPolicies must be installed.
+#     Not all CNIs support NetworkPolicy. Examples that do:
+#       Calico, Cilium, Weave Net, Canal, Antrea
+#     Examples that do NOT:
+#       Flannel (alone), kubenet
+#
+# Verify your CNI supports NetworkPolicy:
+#   kubectl get pods -n kube-system | grep -E 'calico|cilium|weave'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: default-deny-all
+    app.kubernetes.io/instance: default-deny-all
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >-
+      Default-deny NetworkPolicy. Blocks all ingress and egress traffic in the
+      production-baseline namespace. Additional NetworkPolicies must explicitly
+      allow required flows.
+spec:
+  # Empty podSelector — matches ALL pods in this namespace
+  podSelector: {}
+
+  # Specifying both ingress and egress in policyTypes with no rules means:
+  # "apply an ingress policy to all pods (deny all ingress) and
+  #  apply an egress policy to all pods (deny all egress)"
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # No ingress rules = deny all ingress
+  # No egress rules  = deny all egress
+
+---
+# NetworkPolicy — Allow Ingress from Ingress Controller
+# ======================================================
+# Allow the nginx ingress controller to reach the nginx pods on port 8080.
+# The ingress controller runs in the 'ingress-nginx' namespace and has the label
+# 'app.kubernetes.io/name: ingress-nginx'.
+#
+# This policy is combined with the default-deny policy above.
+# Traffic is allowed if any policy permits it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: allow-ingress-controller
+    app.kubernetes.io/instance: allow-ingress-controller
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >-
+      Allows ingress traffic from the nginx-ingress controller namespace to nginx pods
+      on port 8080. Required for Ingress routing to work.
+spec:
+  # Apply this policy to nginx pods
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nginx
+      app.kubernetes.io/instance: nginx
+
+  policyTypes:
+    - Ingress
+
+  ingress:
+    - from:
+        # Allow from pods in the 'ingress-nginx' namespace only.
+        # This prevents other namespaces from directly accessing nginx.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          # Additionally, only allow from pods with the ingress-nginx label.
+          # Both conditions must be true (AND logic — same item in the from list).
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# NetworkPolicy — Allow DNS Egress
+# ================================
+# Allow pods to query the CoreDNS / kube-dns service for name resolution.
+# Without this policy, pods in the default-deny namespace cannot resolve
+# service names (e.g., 'nginx.production-baseline.svc.cluster.local').
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: allow-dns-egress
+    app.kubernetes.io/instance: allow-dns-egress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >-
+      Allows egress from all pods in this namespace to kube-dns on port 53 (UDP/TCP).
+      Required for service name resolution.
+spec:
+  podSelector: {}   # All pods in this namespace
+
+  policyTypes:
+    - Egress
+
+  egress:
+    - to:
+        # Allow to the kube-system namespace where CoreDNS runs
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# NetworkPolicy — Allow Metrics Scraping (Prometheus)
+# ====================================================
+# Allow the Prometheus server to scrape metrics from pods on port 8080.
+# The Prometheus server runs in the 'monitoring' namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: allow-prometheus-scrape
+    app.kubernetes.io/instance: allow-prometheus-scrape
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >-
+      Allows ingress from the Prometheus server (monitoring namespace) to scrape
+      metrics from nginx pods.
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nginx
+      app.kubernetes.io/instance: nginx
+
+  policyTypes:
+    - Ingress
+
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
