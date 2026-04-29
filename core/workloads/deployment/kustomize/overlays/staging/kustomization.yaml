@@ -1,0 +1,51 @@
+# ==============================================================================
+# overlays/staging/kustomization.yaml
+# Staging environment overlay.
+#
+# Staging characteristics:
+#   - Namespace: staging
+#   - Replicas: 2 (tests HA behavior, anti-affinity, rolling updates)
+#   - Image: nginx:1.25 (pinned minor version; matches production)
+#   - Resources: medium limits (closer to production sizing)
+#
+# Staging should be as close to production as possible so that:
+#   - Rolling updates behave identically (same replica count behavior)
+#   - Resource limits don't mask OOM issues that would appear in prod
+#   - Integration and load tests yield representative results
+#
+# To apply:
+#   kubectl apply -k core/workloads/deployment/kustomize/overlays/staging
+#
+# To preview:
+#   kustomize build core/workloads/deployment/kustomize/overlays/staging
+# ==============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+namespace: staging
+
+replicas:
+- name: nginx
+  count: 2
+
+images:
+- name: nginx
+  # Pin to the same minor version as production.
+  # Avoid using digest in staging to allow automatic minor patch updates.
+  # In production, always pin to a digest.
+  newTag: "1.25"
+
+patches:
+- path: patch-resources.yaml
+  target:
+    kind: Deployment
+    name: nginx
+
+commonLabels:
+  environment: staging
+
+commonAnnotations:
+  kustomize.config.k8s.io/overlay: "staging"
