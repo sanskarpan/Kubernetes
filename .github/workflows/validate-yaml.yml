@@ -51,6 +51,7 @@ jobs:
             ! -path './.git/*' \
             ! -path './.github/*' \
             ! -path './helm/*/templates/*' \
+            ! -name 'helmfile.yaml' \
           | sort \
           | xargs -r yamllint \
               --strict \
@@ -99,6 +100,8 @@ jobs:
               ! -path './.github/*' \
               ! -path '*/kustomize/overlays/*' \
               ! -path './platform/observability/prometheus-grafana/values-*.yaml' \
+              ! -name '.pre-commit-config.yaml' \
+              ! -name 'helmfile.yaml' \
             | sort
           )
           if [ -z "$MANIFEST_FILES" ]; then

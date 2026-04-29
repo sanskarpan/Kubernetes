@@ -65,11 +65,6 @@ spec:
     volumeSnapshotLocations:
       - default
 
-    # Labels applied to all Backup resources created by this Schedule.
-    labels:
-      schedule: daily-statefulset-backup
-      managed-by: velero
-
     # Hooks — run commands inside pods before/after backup for consistency.
     # Example: freeze MySQL before backup, thaw after.
     hooks:

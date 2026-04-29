@@ -43,7 +43,14 @@ spec:
         - name: api
           image: node:18-alpine
           imagePullPolicy: IfNotPresent
-          command: ["node", "-e", "require('http').createServer((req,res)=>{res.writeHead(200);res.end(JSON.stringify({status:'ok',path:req.url}));}).listen(3000)"]
+          command:
+            - node
+            - "-e"
+            - >-
+              require('http').createServer((req,res)=>{
+              res.writeHead(200);
+              res.end(JSON.stringify({status:'ok',path:req.url}));
+              }).listen(3000)
 
           securityContext:
             allowPrivilegeEscalation: false
