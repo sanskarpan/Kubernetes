@@ -1,0 +1,71 @@
+# =============================================================================
+# cert-manager ClusterIssuers — Let's Encrypt ACME
+# =============================================================================
+# Two issuers are defined:
+#   1. letsencrypt-staging  — For testing. Issues untrusted certificates.
+#                             Use this first to verify your setup before
+#                             switching to production (avoids rate limit hits).
+#   2. letsencrypt-prod     — For production. Issues trusted certificates.
+#                             Strict rate limits (50 certs/domain/week).
+#
+# Prerequisites:
+#   cert-manager must be installed. See README.md.
+# =============================================================================
+
+---
+# Staging issuer — use for initial testing.
+# Certificates are issued by: "Fake LE Intermediate X1" (not browser-trusted)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: cluster-issuer
+spec:
+  acme:
+    # Let's Encrypt staging ACME server.
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+
+    # Email address used for expiry notifications. Replace with your address.
+    email: admin@example.com
+
+    # Secret where the ACME account private key is stored.
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+
+    # HTTP-01 challenge solver — cert-manager creates a temporary Ingress
+    # that Let's Encrypt uses to verify domain ownership.
+    # Requires an Ingress controller (e.g., ingress-nginx) to be installed.
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx
+
+---
+# Production issuer — use after verifying with staging.
+# Certificates are issued by: "R10" / "R11" (browser-trusted, 90-day validity)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: cluster-issuer
+spec:
+  acme:
+    # Let's Encrypt production ACME server.
+    server: https://acme-v02.api.letsencrypt.org/directory
+
+    # Email address used for expiry notifications and account recovery.
+    # IMPORTANT: Replace with a real, monitored email address.
+    email: admin@example.com
+
+    # Secret where the ACME account private key is stored.
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx
