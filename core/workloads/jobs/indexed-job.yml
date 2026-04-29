@@ -1,0 +1,211 @@
+# ==============================================================================
+# Indexed Job — Parallel Work Queue with Static Partitioning
+# ==============================================================================
+# An Indexed Job assigns each pod a unique integer index (0 to completions-1)
+# via the JOB_COMPLETION_INDEX environment variable. This enables static
+# partitioning: each pod knows exactly which slice of work to process.
+#
+# HOW INDICES ARE ASSIGNED:
+#   - Kubernetes assigns indices 0, 1, 2, ... (completions-1) to pods.
+#   - Each index is guaranteed to be completed exactly once (by ONE pod).
+#   - If a pod fails (non-zero exit), Kubernetes retries it with the SAME index
+#     (up to backoffLimit retries). The index is not reassigned to a different pod.
+#   - Multiple pods may run simultaneously (up to parallelism at a time).
+#   - Pod names follow the pattern: <job-name>-<index>-<random-suffix>
+#     e.g., data-processor-0-abc12, data-processor-1-xyz34
+#
+# INDEX-TO-DATA PARTITION MAPPING PATTERNS:
+#
+#   Pattern 1: S3 prefix sharding
+#     If you have data in s3://bucket/shard-0/, s3://bucket/shard-1/, etc.:
+#       SHARD_PREFIX="shard-${JOB_COMPLETION_INDEX}"
+#       aws s3 sync s3://bucket/${SHARD_PREFIX}/ /data/
+#
+#   Pattern 2: Database row ranges
+#     If you have 500,000 rows split across 5 workers (100,000 each):
+#       TOTAL_ROWS=500000
+#       WORKERS=5
+#       ROWS_PER_WORKER=$((TOTAL_ROWS / WORKERS))
+#       START_ROW=$((JOB_COMPLETION_INDEX * ROWS_PER_WORKER))
+#       END_ROW=$((START_ROW + ROWS_PER_WORKER - 1))
+#       psql -c "SELECT * FROM data WHERE id BETWEEN ${START_ROW} AND ${END_ROW}"
+#
+#   Pattern 3: Static file list
+#     If you have a ConfigMap or object storage listing of files to process:
+#       FILE=$(sed -n "$((JOB_COMPLETION_INDEX + 1))p" /config/file-list.txt)
+#       process "$FILE"
+#
+# COMPLETION MODE COMPARISON:
+#   NonIndexed (default): completions pods run, all identical, no index env var.
+#                         Good for: processing items from a shared queue (SQS, Redis).
+#   Indexed:              each pod gets a unique index. Good for: static partitions,
+#                         known-size datasets, embarrassingly parallel batch work.
+#
+# ttlSecondsAfterFinished:
+#   The Job and its pods are automatically deleted 300 seconds (5 minutes) after
+#   the Job reaches a terminal state (Complete or Failed). This keeps the cluster
+#   clean. Increase if you need longer to inspect logs after failures.
+#
+# Apply:
+#   kubectl apply -f indexed-job.yml
+#   kubectl get pods -n workloads -l job-name=data-processor
+#   kubectl logs -n workloads data-processor-0-<suffix>
+#   kubectl get job data-processor -n workloads -w
+# ==============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-processor
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: data-processor
+    app.kubernetes.io/instance: data-processor
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: batch
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Indexed Job processing 5 data partitions in parallel (up to 3 at a time).
+      Each pod receives a unique JOB_COMPLETION_INDEX (0-4) and processes the
+      corresponding data shard. Demonstrates static partitioning for batch
+      workloads with predictable, bounded parallelism.
+
+spec:
+  # completionMode: Indexed — each pod gets a unique index 0..completions-1.
+  # This is what distinguishes an Indexed Job from a regular (NonIndexed) Job.
+  completionMode: Indexed
+
+  # completions: total number of indexed pods that must succeed.
+  # The Job completes when pods with indices 0, 1, 2, 3, and 4 have all succeeded.
+  completions: 5
+
+  # parallelism: maximum number of pods running at the same time.
+  # With completions=5 and parallelism=3: pods 0, 1, 2 start first; as each
+  # finishes, the next pending index starts (3, then 4).
+  parallelism: 3
+
+  # backoffLimit: maximum retries per-index before the Job is marked Failed.
+  # With backoffLimit: 2, each index gets up to 3 total attempts (first + 2 retries).
+  # If any index exhausts its retries, the entire Job is marked Failed.
+  backoffLimit: 2
+
+  # ttlSecondsAfterFinished: auto-delete Job and pods 5 minutes after completion.
+  # Set to 0 for immediate cleanup (but you lose the ability to inspect pod logs).
+  # Set to 86400 (24h) in production to allow post-mortem analysis after failures.
+  ttlSecondsAfterFinished: 300
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-processor
+        app.kubernetes.io/instance: data-processor
+        app.kubernetes.io/component: batch
+        app.kubernetes.io/part-of: kube-platform
+      annotations:
+        kubernetes.io/description: "Indexed data processing pod"
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # restartPolicy: Never — on failure, create a NEW pod (up to backoffLimit).
+      # The new pod receives the same index. Failed pods are preserved for log inspection.
+      restartPolicy: Never
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: output
+          emptyDir: {}
+
+      containers:
+        - name: processor
+          image: alpine:3.19
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "=== Indexed Job Pod Starting ==="
+              echo "Pod index: ${JOB_COMPLETION_INDEX}"
+              echo "Total completions: ${COMPLETIONS}"
+              echo "Pod name: ${POD_NAME}"
+
+              # ── Determine data partition based on index ─────────────────────
+              # Pattern: S3 prefix sharding — each index maps to a data shard.
+              # Replace this with your actual data partitioning logic.
+              SHARD_PREFIX="shard-${JOB_COMPLETION_INDEX}"
+              echo "Processing data shard: ${SHARD_PREFIX}"
+
+              # ── Simulate partition calculation (database row range) ─────────
+              # If total dataset has 500,000 rows split across 5 workers:
+              TOTAL_ROWS=500000
+              ROWS_PER_SHARD=$((TOTAL_ROWS / 5))
+              START_ROW=$((JOB_COMPLETION_INDEX * ROWS_PER_SHARD))
+              END_ROW=$((START_ROW + ROWS_PER_SHARD - 1))
+              echo "Row range: ${START_ROW} to ${END_ROW}"
+
+              # ── Simulate processing ────────────────────────────────────────
+              echo "Simulating data processing for index ${JOB_COMPLETION_INDEX}..."
+              # In production, replace with real work:
+              #   aws s3 sync s3://my-bucket/${SHARD_PREFIX}/ /data/
+              #   python3 /app/process.py --shard=${JOB_COMPLETION_INDEX}
+              sleep 5
+              echo "Writing output to /output/result-${JOB_COMPLETION_INDEX}.json"
+              printf '{"index": %d, "rows_processed": %d, "status": "ok"}\n' \
+                "${JOB_COMPLETION_INDEX}" "${ROWS_PER_SHARD}" \
+                > "/output/result-${JOB_COMPLETION_INDEX}.json"
+
+              echo "=== Index ${JOB_COMPLETION_INDEX} completed successfully ==="
+
+          env:
+            # JOB_COMPLETION_INDEX is automatically injected by Kubernetes
+            # for Indexed Jobs. No manual configuration needed.
+            # Value: "0", "1", "2", ... "completions-1" (as a string).
+            - name: JOB_COMPLETION_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.kubernetes.io/job-completion-index']
+
+            # Additional context injected via downward API for logging.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+            # Document the total count alongside the index for partition math.
+            - name: COMPLETIONS
+              value: "5"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: output
+              mountPath: /output

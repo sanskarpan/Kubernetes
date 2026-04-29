@@ -1,0 +1,212 @@
+# ==============================================================================
+# ConfigMap with binaryData — Storing Binary Content in ConfigMaps
+# ==============================================================================
+# ConfigMaps have TWO data fields:
+#
+#   data:       — for UTF-8 text strings (plain text config, scripts, properties files)
+#   binaryData: — for arbitrary bytes (binary files, images, compiled configs)
+#
+# KEY DIFFERENCE:
+#   data:       values are stored as-is (UTF-8 strings). kubelet writes them
+#               directly to the volume filesystem as text files.
+#   binaryData: values are base64-encoded in the API/YAML. kubelet DECODES them
+#               when writing to the pod's volume — the file on disk contains the
+#               raw binary bytes, not the base64 string.
+#
+# BOTH CAN COEXIST in the same ConfigMap. Keys must be unique across both fields.
+# kubectl describe will show keys from both fields. The "--binary" flag is not
+# needed when reading — kubectl and the API handle the distinction automatically.
+#
+# USE CASES FOR binaryData:
+#   1. Binary protocol buffer configs (e.g., Envoy bootstrap config in protobuf binary).
+#   2. Public TLS certificates (not keys — use Secrets for private keys).
+#      Embedding a CA certificate in a ConfigMap avoids creating a Secret for
+#      non-sensitive public certs.
+#   3. Small binary assets (icons, fonts, WASM blobs) for static serving.
+#   4. Pre-compiled binary config files that cannot be templated as text.
+#   5. Testing/development: embedding test fixtures alongside config.
+#
+# WHY NOT USE SECRETS FOR PUBLIC CERTS?
+#   Secrets add encryption-at-rest overhead and require RBAC for access.
+#   Public CA certificates are not sensitive — they are meant to be distributed.
+#   ConfigMap is the correct place for public, non-sensitive binary content.
+#   ALWAYS use Secrets for private keys, passwords, and tokens.
+#
+# GENERATING THE base64 VALUE:
+#   # Linux/macOS:
+#   base64 -i myfile.bin
+#   base64 -i myfile.bin | tr -d '\n'   # Single line, no newlines
+#
+#   # For a minimal valid PNG (used in the example below):
+#   # printf '\x89PNG\r\n...<full PNG bytes>...' | base64
+#   # See: https://www.nayuki.io/page/tiny-png-output for minimal PNG generator
+#
+# Apply:
+#   kubectl apply -f configmap-binarydata.yml
+#   kubectl describe configmap binary-config -n workloads
+#   kubectl exec -n workloads binary-data-demo -- xxd /config/icon.png | head -2
+#   kubectl exec -n workloads binary-data-demo -- cat /config/app.conf
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: binary-config
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: binary-config
+    app.kubernetes.io/instance: binary-config
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: configuration
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      ConfigMap demonstrating the binaryData field for storing arbitrary binary
+      content alongside regular UTF-8 config. The binaryData field base64-decodes
+      values before writing to pod volume mounts — the pod sees raw binary files,
+      not base64 strings. Use for public certificates, binary protocol configs,
+      and small binary assets.
+
+# data: UTF-8 strings — stored as-is, written as text files in volume mounts.
+data:
+  # Standard text config coexists with binaryData in the same ConfigMap.
+  app.conf: |
+    # Application configuration
+    log_level=info
+    max_connections=100
+    timeout_ms=5000
+
+  # Feature flags as a properties file
+  features.properties: |
+    feature.dark-mode=true
+    feature.beta-api=false
+    feature.new-dashboard=true
+
+# binaryData: arbitrary bytes — stored as base64 in YAML/API, decoded by kubelet
+# before writing to volume mounts. Pod containers see the raw binary file.
+binaryData:
+  # ── Minimal 1x1 pixel PNG ────────────────────────────────────────────────────
+  # This is a real 1x1 white pixel PNG file encoded as base64.
+  # It starts with the PNG magic bytes: 0x89 0x50 0x4E 0x47 (0x89PNG).
+  # Use case: a placeholder icon, a binary sentinel file, or a test fixture.
+  # In production, replace with your actual binary asset:
+  #   kubectl create configmap binary-config --from-file=icon.png=./icon.png
+  icon.png: >-
+    iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADklEQVQI12P4z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==
+
+  # ── Public CA Certificate (binary DER format) ─────────────────────────────────
+  # DER is the binary encoding of an X.509 certificate (as opposed to PEM which
+  # is base64-encoded DER with -----BEGIN CERTIFICATE----- headers).
+  # Use binaryData for DER; use data for PEM (PEM is valid UTF-8 text).
+  # This is a placeholder — replace with your actual CA cert:
+  #   openssl x509 -in ca.pem -out ca.der -outform DER
+  #   base64 -i ca.der | tr -d '\n'
+  # The placeholder below is a minimal self-signed certificate for illustration.
+  ca.der: >-
+    MIICpDCCAYwCCQDU+pQ4pHgSpDANBgkqhkiG9w0BAQsFADAUMRIwEAYDVQQDDAls
+    b2NhbGhvc3QwHhcNMjQwMTAxMDAwMDAwWhcNMjUwMTAxMDAwMDAwWjAUMRIwEAYD
+    VQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7
+
+---
+# ── Pod showing how to mount binaryData as files ───────────────────────────────
+# Both data and binaryData keys appear as files in the same mounted directory.
+# The kubelet handles base64 decoding transparently — the container sees raw bytes.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: binary-data-demo
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: binary-data-demo
+    app.kubernetes.io/instance: binary-data-demo
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: demo
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Demo pod mounting the binary-config ConfigMap. Shows that binaryData keys
+      (icon.png, ca.der) are decoded by kubelet before being written as files —
+      the container reads raw binary bytes, not base64 strings.
+
+spec:
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 30
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
+
+  volumes:
+    # Mount the entire ConfigMap — both data and binaryData keys become files.
+    # /config/app.conf         ← from data:
+    # /config/features.properties ← from data:
+    # /config/icon.png         ← from binaryData: (decoded by kubelet)
+    # /config/ca.der           ← from binaryData: (decoded by kubelet)
+    - name: config
+      configMap:
+        name: binary-config
+        defaultMode: 0440
+    - name: tmp
+      emptyDir: {}
+
+  containers:
+    - name: app
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== Binary ConfigMap Demo ==="
+          echo ""
+          echo "--- Text config files (from data:) ---"
+          echo "app.conf:"
+          cat /config/app.conf
+          echo ""
+          echo "features.properties:"
+          cat /config/features.properties
+          echo ""
+          echo "--- Binary files (from binaryData:, decoded by kubelet) ---"
+          echo "icon.png first 4 bytes (PNG magic: 89 50 4E 47):"
+          xxd /config/icon.png | head -1
+          echo ""
+          echo "ca.der file size (bytes):"
+          wc -c < /config/ca.der
+          echo ""
+          echo "All files in /config/:"
+          ls -la /config/
+          echo ""
+          echo "Demo complete."
+          sleep 3600
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "64Mi"
+
+      volumeMounts:
+        # Mount all ConfigMap keys (both data and binaryData) into /config/.
+        # Each key becomes a file. binaryData values are automatically decoded.
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp

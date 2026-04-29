@@ -1,0 +1,146 @@
+# ==============================================================================
+# NetworkPolicy: Allow Prometheus Scraping
+# ==============================================================================
+# Prometheus scrapes metrics by polling HTTP /metrics endpoints on application
+# pods. Two NetworkPolicy objects are needed to allow this:
+#
+#   Policy 1 (this namespace, Ingress):
+#     Allow inbound TCP on the metrics port FROM the monitoring namespace.
+#     Without this, the deny-all-ingress policy blocks Prometheus's HTTP GET.
+#
+#   Policy 2 (monitoring namespace, Egress):
+#     Allow outbound TCP on the metrics port TO pods in this namespace.
+#     Without this, the monitoring namespace's deny-all-egress blocks scraping.
+#
+# PROMETHEUS OPERATOR LABEL SELECTOR PATTERN:
+#   Prometheus Operator discovers scrape targets via ServiceMonitor and
+#   PodMonitor custom resources, not via pod annotations. The ServiceMonitor
+#   selects pods by label. The typical label used to identify Prometheus pods
+#   in the monitoring namespace is:
+#     app.kubernetes.io/name: prometheus
+#   If your Prometheus Operator deployment uses a different label (e.g.,
+#   "app: prometheus"), update the podSelector accordingly:
+#     kubectl get pods -n monitoring --show-labels | grep prometheus
+#
+# METRICS PORT CONVENTION:
+#   - 9090: Prometheus's own UI/API (rarely the scrape target port)
+#   - 8080: Common application metrics port (this example)
+#   - 9104: MySQL exporter
+#   - 9187: PostgreSQL exporter
+#   - 9100: Node exporter
+#   Adjust "port: 8080" to match your application's actual metrics port.
+#
+# NAMESPACE ASSUMPTIONS:
+#   - "workloads": namespace containing the application pods being scraped.
+#   - "monitoring": namespace containing the Prometheus deployment.
+#   Update both namespace names to match your cluster layout.
+#
+# Apply:
+#   kubectl apply -f allow-prometheus-scraping.yml
+#   # Verify: from a prometheus pod, curl http://<pod-ip>:8080/metrics
+# ==============================================================================
+
+# ── Policy 1: Allow Ingress from monitoring namespace to application pods ──────
+# Applied to the namespace containing the application (e.g., "workloads").
+# This allows Prometheus running in "monitoring" to scrape the /metrics endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-ingress
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: allow-prometheus-ingress
+    app.kubernetes.io/instance: allow-prometheus-ingress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Allows inbound TCP on port 8080 from Prometheus pods in the monitoring
+      namespace to all pods in the workloads namespace. Apply this alongside
+      deny-all-ingress.yml to permit metric scraping while keeping all other
+      ingress traffic blocked. The complementary allow-prometheus-egress policy
+      must also be applied in the monitoring namespace.
+
+spec:
+  # podSelector: {} — Apply to ALL pods in the workloads namespace.
+  # If you only want to expose metrics from specific pods, add a matchLabels
+  # selector here, e.g.:
+  #   matchLabels:
+  #     app.kubernetes.io/component: api
+  podSelector: {}
+
+  policyTypes:
+    - Ingress
+
+  ingress:
+    # Allow TCP on port 8080 from Prometheus pods in the monitoring namespace.
+    - from:
+        # The namespaceSelector + podSelector pair matches pods that satisfy
+        # BOTH selectors (logical AND). This is more restrictive than listing
+        # them as separate list items (which would be logical OR).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              # Prometheus Operator deploys Prometheus with this label by default.
+              # Verify with: kubectl get pods -n monitoring --show-labels
+              app.kubernetes.io/name: prometheus
+
+      ports:
+        # The application metrics port. Change to match your app's metrics port.
+        # Common values: 8080, 9090, 9100, 9104, 9187.
+        - protocol: TCP
+          port: 8080
+
+---
+# ── Policy 2: Allow Egress from monitoring namespace to application pods ───────
+# Applied to the monitoring namespace where Prometheus runs.
+# Without this, a deny-all-egress policy in the monitoring namespace would
+# prevent Prometheus from reaching out to scrape targets.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-egress
+  namespace: monitoring
+
+  labels:
+    app.kubernetes.io/name: allow-prometheus-egress
+    app.kubernetes.io/instance: allow-prometheus-egress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Allows Prometheus pods in the monitoring namespace to reach port 8080 on
+      pods in the workloads namespace for metric scraping. Apply this in the
+      monitoring namespace alongside any deny-all-egress policy to permit
+      outbound scrape connections while keeping all other egress blocked.
+
+spec:
+  # Only Prometheus pods need to scrape — narrow the selector.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+
+  policyTypes:
+    - Egress
+
+  egress:
+    # Allow TCP on port 8080 to all pods in the workloads namespace.
+    # Add additional egress rules or namespace selectors for other scrape targets
+    # (e.g., kube-system for node-exporter, database for MySQL exporter).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: workloads
+
+      ports:
+        - protocol: TCP
+          port: 8080

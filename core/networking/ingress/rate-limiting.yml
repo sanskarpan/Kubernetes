@@ -1,0 +1,129 @@
+# ==============================================================================
+# Ingress with nginx Rate Limiting
+# ==============================================================================
+# nginx Ingress Controller implements rate limiting using the token bucket
+# algorithm (via the nginx limit_req module). Here is how it works:
+#
+# TOKEN BUCKET ALGORITHM:
+#   Imagine each client has a bucket that fills with tokens at a fixed rate
+#   (the "rps" — requests per second). Each request consumes one token.
+#   When the bucket is empty, new requests are rejected (HTTP 429).
+#   A burst allowance (burst multiplier) lets clients temporarily exceed the
+#   rate by consuming tokens that have accumulated up to the bucket capacity.
+#
+#   Example with limit-rps: 10, limit-burst-multiplier: 3:
+#     - Steady-state rate: 10 requests/second per client IP.
+#     - Burst capacity: 10 * 3 = 30 requests allowed in a burst.
+#     - After the burst, requests are rejected until the bucket refills.
+#
+# ANNOTATIONS EXPLAINED:
+#   limit-rps:              Sustained rate limit (requests per second) per source IP.
+#   limit-connections:      Maximum concurrent connections per source IP.
+#   limit-burst-multiplier: Multiplier for the burst size (burst = rps * multiplier).
+#   limit-whitelist:        Comma-separated CIDR ranges exempt from rate limiting.
+#
+# GLOBAL CONFIGMAP DEFAULT:
+#   To set a default rate limit for ALL Ingresses in the cluster, add to the
+#   ingress-nginx ConfigMap in the ingress-nginx namespace:
+#     kubectl patch configmap ingress-nginx-controller -n ingress-nginx --patch '
+#     data:
+#       limit-rps: "20"
+#       limit-burst-multiplier: "5"
+#     '
+#   Individual Ingress annotations override the global ConfigMap values.
+#   This allows a global safe default with per-Ingress tuning for specific APIs.
+#
+# STORAGE BACKEND:
+#   nginx uses a shared memory zone (limit_req_zone) to track client state.
+#   In multi-replica Ingress Controller deployments, state is NOT shared between
+#   replicas. Each replica enforces the limit independently. This means the
+#   effective cluster-wide limit = (per-replica limit) * (number of replicas).
+#   For precise global rate limiting, use a Redis-backed solution (e.g.,
+#   lua-resty-limit-traffic) or route all traffic through a single replica
+#   (not recommended for HA).
+#
+# IDENTIFYING CLIENTS:
+#   By default, nginx uses the source IP (X-Real-IP or X-Forwarded-For header
+#   if the Ingress Controller is behind a load balancer) to identify clients.
+#   Behind a NAT or proxy, all traffic may appear as one IP — tune accordingly.
+#
+# Apply:
+#   kubectl apply -f rate-limiting.yml
+#   # Test: for i in $(seq 1 20); do curl -s -o /dev/null -w "%{http_code}\n" http://api.example.com/; done
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rate-limited-api
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: rate-limited-api
+    app.kubernetes.io/instance: rate-limited-api
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Ingress for the API service with nginx rate limiting. Limits each source IP
+      to 10 requests/second sustained with a burst of 30. Health-check IPs are
+      whitelisted to prevent probe failures from triggering rate limits.
+
+    # ── Rate Limiting Annotations ──────────────────────────────────────────────
+
+    # limit-rps: Sustained request rate per source IP (requests per second).
+    # Clients exceeding this rate receive HTTP 429 (Too Many Requests).
+    # Note: This is a STRING value — do not omit the quotes.
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+
+    # limit-connections: Maximum simultaneous open connections per source IP.
+    # This catches connection-flood attacks that are slow per-request but open
+    # many connections simultaneously (e.g., Slowloris). Set to a value that
+    # allows legitimate browser connections (browsers open 6-8 per domain).
+    nginx.ingress.kubernetes.io/limit-connections: "5"
+
+    # limit-burst-multiplier: Burst size = limit-rps * limit-burst-multiplier.
+    # With rps=10 and multiplier=3, burst=30. Clients can send up to 30 requests
+    # in rapid succession before rate limiting kicks in.
+    # Increase for APIs called by CI pipelines or batch clients.
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+
+    # limit-whitelist: Comma-separated CIDR ranges exempt from rate limiting.
+    # Use cases:
+    #   - Internal load balancer health check IPs
+    #   - Monitoring probers (Blackbox Exporter)
+    #   - Trusted internal services on a known IP range
+    # WARNING: Whitelisting broad ranges (e.g., 10.0.0.0/8) defeats rate limiting
+    # for internal attackers. Be as specific as possible.
+    nginx.ingress.kubernetes.io/limit-whitelist: "10.0.0.0/8,172.16.0.0/12"
+
+    # ── Other Recommended Annotations ─────────────────────────────────────────
+
+    # Return HTTP 429 (RFC 6585) instead of the default 503 for rate-limited requests.
+    # 429 is semantically correct and allows clients to implement retry-after logic.
+    nginx.ingress.kubernetes.io/custom-http-errors: "429"
+
+    # proxy-read-timeout: Kill requests that take longer than 30 seconds.
+    # Prevents slow clients from holding worker threads indefinitely.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+
+    # enable-cors: Allow cross-origin requests (adjust as needed for your API).
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://app.example.com"
+
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8080

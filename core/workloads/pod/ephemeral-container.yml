@@ -1,0 +1,203 @@
+# ==============================================================================
+# Ephemeral Containers — Live Pod Debugging Reference
+# ==============================================================================
+# Ephemeral containers are temporary containers injected into a RUNNING pod for
+# debugging purposes. They are NOT defined in the pod spec at creation time —
+# they are added dynamically via the API. This file serves as:
+#
+#   1. A target Pod you would debug in practice.
+#   2. Reference documentation for kubectl debug commands.
+#   3. A commented-out ephemeral container spec showing what gets injected.
+#
+# WHY EPHEMERAL CONTAINERS EXIST:
+#   Modern production images are often "distroless" — they contain only the
+#   application binary and its runtime libraries. No shell, no curl, no ps.
+#   This is excellent for security (no tools = no lateral movement) but makes
+#   debugging impossible from within the container. Ephemeral containers solve
+#   this by injecting a debug-enabled sidecar that shares namespaces with the
+#   target container.
+#
+# KEY PROPERTIES OF EPHEMERAL CONTAINERS:
+#   - They CANNOT be removed once added (they are immutable after injection).
+#   - They CANNOT have resource requests/limits (they are exempt).
+#   - They DO NOT restart if they exit.
+#   - They share the pod's network namespace by default.
+#   - They CAN share the target container's process namespace if the pod has
+#     shareProcessNamespace: true (see below).
+#   - They are removed when the pod is deleted.
+#
+# PROCESS NAMESPACE SHARING (shareProcessNamespace):
+#   Normally, each container in a pod has its own PID namespace — container A
+#   cannot see container B's processes. Setting shareProcessNamespace: true on
+#   the pod spec merges all containers into a single PID namespace, allowing:
+#     - kubectl exec into any container to run "ps aux" and see ALL processes.
+#     - An ephemeral debug container to "strace" or "gdb" the main process.
+#     - Signal sending across containers: kill -9 <pid-of-other-container>.
+#   Security note: shareProcessNamespace reduces isolation between containers.
+#   Do NOT enable it by default — only for pods that genuinely need it.
+#   Ephemeral containers can access the target's filesystem via:
+#     /proc/<pid>/root → the target container's root filesystem.
+#   This lets you inspect files in a distroless container without needing a shell.
+#
+# ==============================================================================
+# KUBECTL DEBUG COMMANDS (the canonical way to add ephemeral containers)
+# ==============================================================================
+#
+# 1. Debug a specific container in a running pod (most common):
+#    kubectl debug -it nginx-target -n workloads \
+#      --image=busybox:1.36 \
+#      --target=nginx \
+#      -- sh
+#
+#    --target=nginx: join the NETWORK and PROCESS namespace of the "nginx"
+#    container (requires shareProcessNamespace or ContainerRuntime support).
+#    Inside the shell: "ps aux" shows nginx's processes, "netstat" shows its
+#    sockets, and /proc/<nginx-pid>/root is the nginx container's filesystem.
+#
+# 2. Debug using an image with more tools (Ubuntu or custom debug image):
+#    kubectl debug -it nginx-target -n workloads \
+#      --image=ubuntu:22.04 \
+#      --target=nginx \
+#      -- bash
+#
+# 3. Copy the pod with modifications (non-invasive, creates a new pod):
+#    kubectl debug nginx-target -n workloads \
+#      --copy-to=nginx-debug \
+#      --image=nginx:1.25-alpine \
+#      --set-image=nginx=nginx:1.25-alpine \
+#      -- sh
+#    # This creates a copy of the pod named "nginx-debug" that you can modify.
+#    # The original pod is untouched. Clean up: kubectl delete pod nginx-debug -n workloads
+#
+# 4. Debug a NODE (runs a privileged pod on the node):
+#    kubectl debug node/<node-name> \
+#      -it \
+#      --image=ubuntu:22.04
+#    # The node's root filesystem is mounted at /host inside the debug pod.
+#    # This gives you access to: kubelet logs, container runtime socket, node metrics.
+#    # WARNING: this pod runs privileged — it has full node access.
+#
+# 5. Check what ephemeral containers are attached to a pod:
+#    kubectl get pod nginx-target -n workloads -o jsonpath='{.spec.ephemeralContainers}'
+#    kubectl describe pod nginx-target -n workloads | grep -A 10 "Ephemeral Containers"
+#
+# ==============================================================================
+# WHAT THE INJECTED SPEC LOOKS LIKE (for reference — not applied directly)
+# ==============================================================================
+# When you run "kubectl debug -it nginx-target --image=busybox:1.36 --target=nginx -- sh",
+# Kubernetes injects an ephemeralContainers entry like this into the live pod:
+#
+# spec:
+#   ephemeralContainers:
+#     - name: debugger-abc12              # Auto-generated name
+#       image: busybox:1.36
+#       command: ["sh"]
+#       stdin: true
+#       tty: true
+#       targetContainerName: nginx        # Joins this container's namespaces
+#       terminationMessagePolicy: File
+#       imagePullPolicy: IfNotPresent
+#       # Note: no resources, no livenessProbe, no readinessProbe
+#       # Ephemeral containers intentionally omit these fields
+#
+# You can also apply ephemeral containers directly via the API (kubectl replace):
+#   kubectl get pod nginx-target -n workloads -o json \
+#     | jq '.spec.ephemeralContainers += [{"name":"debug","image":"busybox:1.36","command":["sh"],"stdin":true,"tty":true}]' \
+#     | kubectl replace --raw /api/v1/namespaces/workloads/pods/nginx-target/ephemeralcontainers -f -
+#
+# ==============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-target
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: nginx-target
+    app.kubernetes.io/instance: nginx-target
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Target pod for ephemeral container debugging demonstrations. Uses a
+      minimal nginx image to simulate a "distroless-like" production container.
+      Debug it with: kubectl debug -it nginx-target -n workloads --image=busybox:1.36 --target=nginx -- sh
+
+spec:
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 30
+
+  # shareProcessNamespace: true — all containers (including ephemeral debug
+  # containers) share a single PID namespace. This allows the ephemeral
+  # container to see and interact with nginx's processes via "ps aux".
+  # In production pods, only enable this when cross-container debugging is
+  # a planned operational procedure. Disable when not needed.
+  shareProcessNamespace: true
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 101  # nginx user inside nginx:1.25-alpine
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+
+  volumes:
+    - name: nginx-cache
+      emptyDir: {}
+    - name: nginx-run
+      emptyDir: {}
+    - name: nginx-tmp
+      emptyDir: {}
+
+  containers:
+    - name: nginx
+      image: nginx:1.25-alpine
+      imagePullPolicy: IfNotPresent
+
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+          name: http
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+          add:
+            - NET_BIND_SERVICE
+
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+
+      volumeMounts:
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+        - name: nginx-tmp
+          mountPath: /tmp
+
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 15
+        failureThreshold: 3
+
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3

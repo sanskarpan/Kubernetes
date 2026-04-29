@@ -1,0 +1,140 @@
+# ==============================================================================
+# ExternalName Service — DNS CNAME Proxying to External Services
+# ==============================================================================
+# ExternalName is a special Service type that maps a Kubernetes Service name to
+# an external DNS hostname via a CNAME record. There is NO proxying, NO virtual
+# IP, and NO kube-proxy involvement — it is a pure DNS alias.
+#
+# HOW IT WORKS:
+#   When a pod queries "postgres-external.database.svc.cluster.local", CoreDNS
+#   returns a CNAME record pointing to "postgres.example.com". The pod's TCP
+#   stack then resolves "postgres.example.com" using its upstream DNS servers
+#   and connects directly to the resolved IP.
+#
+#   Normal Service:   pod → ClusterIP (virtual IP) → kube-proxy → pod endpoints
+#   ExternalName:     pod → CoreDNS CNAME → external DNS → external IP (direct)
+#
+# WHY NO PORTS ARE NEEDED:
+#   Because ExternalName is a DNS CNAME with no load balancing or proxying, the
+#   port field in the Service spec has no effect on routing. However, you MAY
+#   include ports for documentation purposes (kubectl describe shows them).
+#   The actual connection port is determined by the application code.
+#
+# WHEN TO USE EXTERNALNAME:
+#   1. Migrating from external to in-cluster: define the ExternalName Service
+#      first (pointing to external DB), deploy the app, then swap the Service to
+#      ClusterIP when the in-cluster DB is ready — zero application config change.
+#   2. Abstracting external dependencies: apps reference a stable in-cluster name
+#      ("redis-cache") instead of a cloud-provider endpoint that may change.
+#   3. Cross-namespace access: one namespace references a Service in another
+#      namespace via ExternalName rather than using the full FQDN.
+#
+# LIMITATIONS:
+#   1. No health checks — Kubernetes cannot check if the external host is up.
+#      If the external service is down, pods will get connection refused/timeout.
+#   2. No load balancing — CNAME resolves to whatever DNS returns (may be a
+#      single IP or round-robin, depending on the external service's DNS config).
+#   3. HTTPS / SNI issues — the CNAME means the pod connects to "postgres.example.com"
+#      but the TLS certificate is for "postgres.example.com", not the Kubernetes
+#      Service name. Some clients fail SNI validation. Use a headless Service with
+#      Endpoints for HTTPS external services requiring SNI matching.
+#   4. No NetworkPolicy IP-block support — NetworkPolicy rules using ipBlock apply
+#      to the resolved IP, which may change. Use a fixed-IP Endpoints approach for
+#      strict egress control.
+#
+# Apply:
+#   kubectl apply -f externalname.yml
+#   kubectl get svc -n database
+#   # Test from a pod: nslookup postgres-external.database.svc.cluster.local
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-external
+  namespace: database
+
+  labels:
+    app.kubernetes.io/name: postgres-external
+    app.kubernetes.io/instance: postgres-external
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      ExternalName Service aliasing the internal name "postgres-external" to
+      the external hostname "postgres.example.com" via a DNS CNAME. Pods in
+      the database namespace can connect using the stable cluster-internal name
+      instead of hard-coding the external hostname. Swap to ClusterIP when the
+      database is migrated in-cluster — no application config changes required.
+
+spec:
+  # ExternalName: no virtual IP, no kube-proxy, pure DNS CNAME.
+  type: ExternalName
+
+  # externalName is the external DNS hostname the CNAME points to.
+  # Must be a fully qualified domain name (FQDN). Must NOT be an IP address —
+  # use a headless Service + custom Endpoints for IP-based external services.
+  externalName: postgres.example.com
+
+  # Ports are informational only for ExternalName Services — they do NOT affect
+  # routing. Include them for documentation and to allow NetworkPolicy authors
+  # to understand the expected traffic profile.
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+
+---
+# ==============================================================================
+# Second ExternalName Example — AWS RDS Endpoint
+# ==============================================================================
+# Abstracts an Amazon RDS instance behind a stable Kubernetes Service name.
+# Application teams reference "mysql-rds.database.svc.cluster.local" and do
+# not need to know the AWS-generated endpoint hostname.
+#
+# AWS RDS endpoints look like:
+#   mydb.cxxxxxxxx.us-east-1.rds.amazonaws.com
+# These change when:
+#   - The DB instance is renamed or recreated.
+#   - A read replica is promoted to primary.
+#   - The cluster is migrated to a different region.
+#
+# By abstracting behind an ExternalName Service, only the Service needs updating
+# when the RDS endpoint changes — all application deployments remain untouched.
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-rds
+  namespace: database
+
+  labels:
+    app.kubernetes.io/name: mysql-rds
+    app.kubernetes.io/instance: mysql-rds
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      ExternalName Service abstracting an AWS RDS MySQL instance behind the
+      stable cluster-internal name "mysql-rds". When the RDS endpoint changes
+      (rename, failover, region migration), update only this Service — all
+      application pods continue using the same connection string.
+
+spec:
+  type: ExternalName
+
+  # Replace with your actual RDS endpoint from the AWS Console or CLI:
+  # aws rds describe-db-instances --query 'DBInstances[*].Endpoint.Address'
+  externalName: mydb.cxxxxxxxx.us-east-1.rds.amazonaws.com
+
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+      protocol: TCP
