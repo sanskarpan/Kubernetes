@@ -1,0 +1,259 @@
+# ==============================================================================
+# CUSTOM RESOURCE DEFINITION — WebApplication
+# ==============================================================================
+# Defines a "WebApplication" custom resource in the platform.example.com API group.
+# This CRD allows platform teams to express an entire web application deployment
+# (container image, replica count, port, environment, resources) in a single object.
+# An operator would watch these resources and reconcile the actual Deployment,
+# Service, and optionally Ingress objects.
+#
+# API: platform.example.com/v1alpha1
+# Kind: WebApplication (plural: webapplications, short: webapp, wa)
+# Scope: Namespaced
+#
+# Apply:
+#   kubectl apply -f example-crd.yml
+#
+# Create an instance:
+#   kubectl apply -f example-cr.yml
+#
+# List instances:
+#   kubectl get webapp -n workloads
+#
+# Explain fields (uses description annotations from schema):
+#   kubectl explain webapp.spec
+#   kubectl explain webapp.spec.replicas
+# ==============================================================================
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  # CRD name format: <plural>.<group>
+  name: webapplications.platform.example.com
+  labels:
+    app.kubernetes.io/name: webapplications-crd
+    app.kubernetes.io/component: extensibility
+    app.kubernetes.io/part-of: platform-api
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      CRD defining the WebApplication resource for the platform.example.com API group.
+      Allows declaring an entire web application (image, replicas, port, environment,
+      resource bounds) as a single Kubernetes object. An operator reconciles this
+      resource into a Deployment, Service, and HPA.
+spec:
+  # ---------------------------------------------------------------------------
+  # API group and scope
+  # ---------------------------------------------------------------------------
+  group: platform.example.com
+
+  scope: Namespaced  # Instances live within a namespace (not cluster-wide)
+
+  # ---------------------------------------------------------------------------
+  # Resource names — how the resource is referred to in kubectl and the API
+  # ---------------------------------------------------------------------------
+  names:
+    # plural: used in URLs: /apis/platform.example.com/v1alpha1/namespaces/x/webapplications
+    plural: webapplications
+    # singular: used in kubectl describe, explain
+    singular: webapplication
+    # kind: the PascalCase type name used in YAML manifests
+    kind: WebApplication
+    # listKind: auto-generated as <kind>List
+    listKind: WebApplicationList
+    # shortNames: aliases for kubectl (kubectl get webapp)
+    shortNames:
+      - webapp
+      - wa
+    # categories: makes instances appear in: kubectl get platform
+    categories:
+      - platform
+
+  # ---------------------------------------------------------------------------
+  # Versions — CRDs support multiple versions with independent schemas
+  # ---------------------------------------------------------------------------
+  versions:
+    - name: v1alpha1
+      # served: true means this version is available via the API
+      served: true
+      # storage: true means this is the version stored in etcd.
+      # Exactly one version must have storage: true.
+      storage: true
+
+      # -----------------------------------------------------------------------
+      # additionalPrinterColumns — defines kubectl get output columns
+      # Default is NAME and AGE only; these add meaningful columns.
+      # -----------------------------------------------------------------------
+      additionalPrinterColumns:
+        - name: Image
+          type: string
+          description: Container image for this WebApplication
+          jsonPath: .spec.image
+
+        - name: Replicas
+          type: integer
+          description: Desired replica count
+          jsonPath: .spec.replicas
+
+        - name: Environment
+          type: string
+          description: Deployment environment (dev/staging/production)
+          jsonPath: .spec.environment
+
+        - name: Available
+          type: integer
+          description: Number of available replicas (from status)
+          jsonPath: .status.availableReplicas
+
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+
+      # -----------------------------------------------------------------------
+      # Subresources — enables status separation and kubectl scale support
+      # -----------------------------------------------------------------------
+      subresources:
+        # status subresource: spec is set by users; status is set by the operator.
+        # Without this, anyone with write access to the resource can modify status.
+        status: {}
+
+        # scale subresource: enables `kubectl scale webapp my-app --replicas=5`
+        # and HPA integration (HPA reads/writes the spec.replicas field via this API)
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.availableReplicas
+          # labelSelectorPath: optional — required for HPA to determine which pods to count
+          # labelSelectorPath: .status.labelSelector
+
+      # -----------------------------------------------------------------------
+      # Schema — OpenAPI v3 validation for the custom resource
+      # All instances are validated against this schema at admission time.
+      # -----------------------------------------------------------------------
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: "WebApplication is a high-level abstraction for deploying a containerized web application."
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+
+            # -----------------------------------------------------------------
+            # spec: Desired state defined by the user (operator reconciles this)
+            # -----------------------------------------------------------------
+            spec:
+              type: object
+              description: "Desired state of the WebApplication."
+              # required: These fields must be present; admission fails without them.
+              required:
+                - image
+                - replicas
+                - port
+                - environment
+              properties:
+                image:
+                  type: string
+                  description: >
+                    Container image to deploy. Must include a tag — latest is not allowed.
+                    Example: nginx:1.27.0 or registry.example.com/myapp:v2.3.1
+                  # minLength prevents empty strings
+                  minLength: 1
+                  # pattern: enforces image:tag format — tag required, :latest disallowed
+                  pattern: '^[^:]+:[^:]+$'
+
+                replicas:
+                  type: integer
+                  description: "Number of pod replicas to run. Must be between 1 and 100."
+                  minimum: 1
+                  maximum: 100
+
+                port:
+                  type: integer
+                  description: "Port the container listens on. Must be a valid port number."
+                  minimum: 1
+                  maximum: 65535
+
+                environment:
+                  type: string
+                  description: "Deployment environment. Controls configuration and resource allocation."
+                  # enum: only these values are accepted — prevents typos
+                  enum:
+                    - dev
+                    - staging
+                    - production
+
+                resources:
+                  type: object
+                  description: "Resource requests and limits for the application container."
+                  properties:
+                    cpu:
+                      type: string
+                      description: "CPU resource request (e.g., '100m', '0.5', '2')"
+                      # pattern: valid Kubernetes CPU quantity format
+                      pattern: '^(\d+m|\d+(\.\d+)?)$'
+                    memory:
+                      type: string
+                      description: "Memory resource request (e.g., '128Mi', '1Gi', '512M')"
+                      # pattern: valid Kubernetes memory quantity format
+                      pattern: '^(\d+)(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$'
+
+                # Optional: ingress configuration for this application
+                ingress:
+                  type: object
+                  description: "Optional ingress configuration for external HTTP access."
+                  properties:
+                    enabled:
+                      type: boolean
+                      description: "Whether to create an Ingress for this WebApplication."
+                    host:
+                      type: string
+                      description: "Hostname for the Ingress rule (e.g., myapp.example.com)"
+
+            # -----------------------------------------------------------------
+            # status: Actual state written by the operator controller.
+            # Users should not set these fields — the status subresource enforces this.
+            # -----------------------------------------------------------------
+            status:
+              type: object
+              description: "Observed state of the WebApplication, populated by the operator."
+              # x-kubernetes-preserve-unknown-fields: allows the operator to add
+              # additional status fields beyond those defined here (useful during development)
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                availableReplicas:
+                  type: integer
+                  description: "Number of pod replicas currently available and passing health checks."
+
+                conditions:
+                  type: array
+                  description: "Standard Kubernetes conditions representing the WebApplication's lifecycle state."
+                  items:
+                    type: object
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    properties:
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      message:
+                        type: string
+                      reason:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      type:
+                        type: string
+                        enum: [Available, Progressing, Degraded]
+
+                observedGeneration:
+                  type: integer
+                  description: "The metadata.generation that was last processed by the operator."
