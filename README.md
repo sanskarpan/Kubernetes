@@ -3,10 +3,34 @@
 [![Validate YAML](https://github.com/sanskarpan/Kubernetes/actions/workflows/validate-yaml.yml/badge.svg)](https://github.com/sanskarpan/Kubernetes/actions/workflows/validate-yaml.yml)
 [![Helm Lint](https://github.com/sanskarpan/Kubernetes/actions/workflows/helm-lint.yml/badge.svg)](https://github.com/sanskarpan/Kubernetes/actions/workflows/helm-lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Kubernetes: 1.29 | 1.30 | 1.31 | 1.32](https://img.shields.io/badge/Kubernetes-1.29%20%7C%201.30%20%7C%201.31%20%7C%201.32-blue?logo=kubernetes)](https://kubernetes.io/releases/)
+[![Kubernetes: 1.28 | 1.29 | 1.30 | 1.31 | 1.32](https://img.shields.io/badge/Kubernetes-1.28%20%7C%201.29%20%7C%201.30%20%7C%201.31%20%7C%201.32-blue?logo=kubernetes)](https://kubernetes.io/releases/)
 [![KIND: 0.29.0](https://img.shields.io/badge/KIND-0.29.0-blue)](https://kind.sigs.k8s.io/)
 
 A production-grade Kubernetes reference repository covering cluster setup, workload manifests, networking, storage, security, observability, GitOps, and platform tooling. Every manifest in this repository follows real-world best practices: non-root containers, read-only root filesystems, resource limits, security contexts, and structured labels.
+
+---
+
+## Kubernetes Version Compatibility Matrix
+
+Feature availability across supported Kubernetes versions. Use this matrix to understand which capabilities are stable (GA), beta, or alpha for your cluster version.
+
+| Feature | 1.28 | 1.29 | 1.30 | 1.31 | 1.32 |
+|---------|------|------|------|------|------|
+| PodDisruptionBudget v1 | ✅ GA | ✅ GA | ✅ GA | ✅ GA | ✅ GA |
+| HPA v2 | ✅ GA | ✅ GA | ✅ GA | ✅ GA | ✅ GA |
+| VPA | 🟡 Beta | 🟡 Beta | 🟡 Beta | 🟡 Beta | 🟡 Beta |
+| Gateway API (core) | 🟡 Beta | 🟡 Beta | 🟡 Beta | ✅ GA | ✅ GA |
+| Sidecar containers (native) | 🔴 Alpha | 🟡 Beta | ✅ GA | ✅ GA | ✅ GA |
+| PersistentVolumeClaimRetentionPolicy | 🟡 Beta | 🟡 Beta | ✅ GA | ✅ GA | ✅ GA |
+| ReadWriteOncePod | ✅ GA | ✅ GA | ✅ GA | ✅ GA | ✅ GA |
+| Indexed Jobs | ✅ GA | ✅ GA | ✅ GA | ✅ GA | ✅ GA |
+| topologySpreadConstraints | ✅ GA | ✅ GA | ✅ GA | ✅ GA | ✅ GA |
+| seccompProfile.type | ✅ GA | ✅ GA | ✅ GA | ✅ GA | ✅ GA |
+| Pod Security Admission (PSA) | ✅ GA | ✅ GA | ✅ GA | ✅ GA | ✅ GA |
+
+**Legend**: ✅ GA — stable and production-ready | 🟡 Beta — enabled by default, API may change | 🔴 Alpha — feature gate required, not for production | ➖ Not available
+
+> VPA is a separate project ([kubernetes/autoscaler](https://github.com/kubernetes/autoscaler)) and is not versioned with Kubernetes core. The Beta designation reflects its maturity level across all listed versions.
 
 ---
 
