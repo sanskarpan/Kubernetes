@@ -1,0 +1,136 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notes-app
+  namespace: notes-app
+  labels:
+    app.kubernetes.io/name: notes-app
+    app.kubernetes.io/instance: notes-app
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "Django REST API backend for the Notes application"
+    kubectl.kubernetes.io/default-container: notes-app
+spec:
+  replicas: 2
+  # Zero-downtime rolling update
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Allow one extra pod during update
+      maxUnavailable: 0  # Never reduce capacity during update
+  # Keep only 5 old ReplicaSets for rollback history
+  revisionHistoryLimit: 5
+  # Wait 10s for pod to be stable before marking rollout step complete
+  minReadySeconds: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notes-app
+      app.kubernetes.io/instance: notes-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notes-app
+        app.kubernetes.io/instance: notes-app
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "Notes app pod"
+        kubectl.kubernetes.io/default-container: notes-app
+    spec:
+      # Do not auto-mount the default ServiceAccount token
+      # This app does not call the Kubernetes API
+      automountServiceAccountToken: false
+
+      # Allow 60s for graceful shutdown
+      terminationGracePeriodSeconds: 60
+
+      # Pod-level security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000      # matches Dockerfile appuser UID
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: notes-app
+          image: trainwithshubham/notes-app-k8s:latest
+          # In production, pin to SHA256 digest:
+          # image: trainwithshubham/notes-app-k8s@sha256:<digest>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          # Container-level security context
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          # Resource requests/limits
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              # CPU limit intentionally omitted — hard limits cause throttling
+              # even when the node has idle capacity
+
+          # Startup probe: gives the app up to 5 minutes to start
+          # Prevents liveness from killing a legitimately slow-starting app
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            failureThreshold: 30
+            periodSeconds: 10
+
+          # Liveness probe: restarts the container if it becomes unresponsive
+          # MUST use a different path than readiness to avoid simultaneous
+          # detach-and-delete behavior
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          # Readiness probe: controls when traffic is sent to this pod
+          # MUST NOT check external dependencies (DB, third-party APIs)
+          # A failing dependency would cascade to mark all pods NotReady
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # Graceful shutdown: sleep 5s to allow kube-proxy to drain connections
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+
+          # Django needs a writable /tmp for session files and uploads
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        # emptyDir for writeable /tmp (required when readOnlyRootFilesystem: true)
+        - name: tmp
+          emptyDir: {}
