@@ -1,7 +1,7 @@
 # Kubernetes Production Reference Repository
 
-[![Validate YAML](https://github.com/your-org/kube-platform/actions/workflows/validate-yaml.yml/badge.svg)](https://github.com/your-org/kube-platform/actions/workflows/validate-yaml.yml)
-[![Helm Lint](https://github.com/your-org/kube-platform/actions/workflows/helm-lint.yml/badge.svg)](https://github.com/your-org/kube-platform/actions/workflows/helm-lint.yml)
+[![Validate YAML](https://github.com/sanskarpan/Kubernetes/actions/workflows/validate-yaml.yml/badge.svg)](https://github.com/sanskarpan/Kubernetes/actions/workflows/validate-yaml.yml)
+[![Helm Lint](https://github.com/sanskarpan/Kubernetes/actions/workflows/helm-lint.yml/badge.svg)](https://github.com/sanskarpan/Kubernetes/actions/workflows/helm-lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Kubernetes: 1.29 | 1.30 | 1.31 | 1.32](https://img.shields.io/badge/Kubernetes-1.29%20%7C%201.30%20%7C%201.31%20%7C%201.32-blue?logo=kubernetes)](https://kubernetes.io/releases/)
 [![KIND: 0.29.0](https://img.shields.io/badge/KIND-0.29.0-blue)](https://kind.sigs.k8s.io/)
