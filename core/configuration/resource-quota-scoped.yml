@@ -1,0 +1,54 @@
+---
+# ResourceQuota with scopeSelector — limits resources for pods matching
+# a specific PriorityClass. Unlike a blanket quota, scopeSelector lets
+# you set different budgets for high-priority vs. best-effort workloads
+# within the same namespace.
+#
+# Use case: allow burst capacity for critical services while capping
+# resource consumption of batch and best-effort pods.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: high-priority-quota
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: high-priority-quota
+    app.kubernetes.io/component: resource-management
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >-
+      Limits CPU and memory for pods using the high-priority PriorityClass.
+spec:
+  hard:
+    cpu: "20"
+    memory: 40Gi
+    pods: "50"
+  scopeSelector:
+    matchExpressions:
+      - scopeName: PriorityClass
+        operator: In
+        values:
+          - high-priority
+---
+# Best-effort quota — caps resources for non-critical workloads.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: best-effort-quota
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: best-effort-quota
+    app.kubernetes.io/component: resource-management
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >-
+      Limits CPU and memory for BestEffort QoS pods (no requests/limits set).
+spec:
+  hard:
+    pods: "20"
+  scopeSelector:
+    matchExpressions:
+      - scopeName: BestEffort
+        operator: Exists
