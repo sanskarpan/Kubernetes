@@ -1,0 +1,64 @@
+---
+name: ShellCheck
+
+on:
+  push:
+    branches: ["main", "master", "develop"]
+  pull_request:
+    branches: ["main", "master", "develop"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Find and lint shell scripts
+        run: |
+          echo "Scanning for shell scripts..."
+          SHELL_FILES=$(
+            find . -type f -name '*.sh' \
+              ! -path './.git/*' \
+              ! -path './vendor/*' \
+            | sort
+          )
+          if [ -z "$SHELL_FILES" ]; then
+            echo "No shell scripts found. Skipping ShellCheck."
+            exit 0
+          fi
+          echo "Found scripts:"
+          echo "$SHELL_FILES"
+          echo ""
+          FAILED=0
+          while IFS= read -r file; do
+            echo "--- shellcheck: $file ---"
+            shellcheck --severity=warning "$file" || FAILED=1
+          done <<< "$SHELL_FILES"
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::ShellCheck found issues. Review the output above."
+            exit 1
+          fi
+          echo "All shell scripts passed ShellCheck."
+
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [shellcheck]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.shellcheck.result }}" != "success" ]]; then
+            echo "::error::shellcheck failed"
+            exit 1
+          fi
+          echo "ShellCheck CI gate passed."
