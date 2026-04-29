@@ -1,0 +1,182 @@
+# =============================================================================
+# Node App Helm Chart — Default Values
+# =============================================================================
+# Override these in environment-specific files:
+#   helm upgrade --install node-app ./helm/node-app -f values-prod.yaml
+# =============================================================================
+
+# Number of pod replicas.
+# Use >= 2 in production for HA. The PodDisruptionBudget below ensures at least
+# 1 pod remains available during voluntary disruptions.
+replicaCount: 2
+
+image:
+  # Public image for this demo application.
+  # Production: replace with your private registry path.
+  repository: trainwithshubham/node-app-test-new
+
+  # Image pull policy.
+  # IfNotPresent: pull only if not already cached on the node (reproducible).
+  pullPolicy: IfNotPresent
+
+  # Image tag.
+  # IMPORTANT: Do not use "latest" in production — it is a mutable tag.
+  # Pin to a specific version or (preferred) a SHA-256 digest:
+  #   digest: sha256:<hash>
+  tag: "latest"
+
+  # Production: pin to a digest for cryptographic image verification.
+  # Generate: docker inspect --format='{{index .RepoDigests 0}}' trainwithshubham/node-app-test-new:latest
+  # digest: sha256:abc123...
+
+# Image pull secrets for private container registries.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  # Do not auto-mount the API server token unless this pod needs to call the K8s API.
+  automount: false
+  annotations: {}
+  name: ""
+
+# Pod-level annotations.
+podAnnotations:
+  kubectl.kubernetes.io/default-container: node-app
+
+# Additional pod-level labels.
+podLabels: {}
+
+# Pod-level security context.
+podSecurityContext:
+  runAsNonRoot: true
+  # Node.js apps commonly run as UID 1000 (the 'node' user in official images).
+  # Verify: docker run --rm node:20-alpine id node
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  # Requires explicit writable volumes for tmp, cache, or log directories.
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  # NodePort exposes the service on each node's IP at a static port.
+  # Use ClusterIP + Ingress for production external access.
+  type: NodePort
+
+  # Port the Service exposes externally.
+  port: 80
+
+  # Port the Node.js application listens on inside the container.
+  # Fixed typo from original: "tartgetPort" → "targetPort".
+  targetPort: 8000
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: node-app.example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Container resource requests and limits.
+# Node.js apps can be memory-intensive. Monitor heap usage and adjust accordingly.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    # CPU limit omitted to avoid throttling (see apache chart for explanation).
+    memory: 256Mi   # Node.js apps typically need more memory than static servers
+
+# Liveness probe — restarts container if it becomes unresponsive.
+livenessProbe:
+  httpGet:
+    path: /
+    port: node-app   # Named port defined in container spec
+  initialDelaySeconds: 15   # Give Node.js time to start
+  periodSeconds: 20
+  failureThreshold: 3
+
+# Readiness probe — removes pod from load balancer if not ready.
+# Check only local state — not external database or API connectivity.
+readinessProbe:
+  httpGet:
+    path: /
+    port: node-app
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
+
+# Startup probe — allows slow-starting containers time to initialise.
+# failureThreshold * periodSeconds = 300s (5 min) before liveness kicks in.
+startupProbe:
+  httpGet:
+    path: /
+    port: node-app
+  failureThreshold: 30
+  periodSeconds: 10
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  scaleDownStabilizationWindowSeconds: 300
+
+# PodDisruptionBudget — ensures availability during node drains.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Writable volumes required by readOnlyRootFilesystem: true.
+# Node.js may write to /tmp for temp files or to a cache directory.
+volumes:
+  - name: tmp
+    emptyDir: {}
+  - name: npm-cache
+    emptyDir: {}
+
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+  - name: npm-cache
+    mountPath: /home/node/.npm
+
+nodeSelector: {}
+tolerations: []
+
+# Pod anti-affinity — spread replicas across nodes for HA.
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: node-app
+          topologyKey: kubernetes.io/hostname
+
+# Rolling update strategy — zero-downtime deployments.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+revisionHistoryLimit: 5
+minReadySeconds: 10
+# Node.js default graceful shutdown with 30s for drain + 10s buffer.
+terminationGracePeriodSeconds: 60
