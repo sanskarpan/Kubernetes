@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mysql.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: "MySQL configuration ConfigMap. Mounted at /etc/mysql/conf.d/."
+data:
+  my.cnf: |
+    [mysqld]
+    # -------------------------------------------------------------------
+    # Character set and collation
+    # -------------------------------------------------------------------
+    character-set-server  = utf8mb4
+    collation-server      = utf8mb4_unicode_ci
+
+    # -------------------------------------------------------------------
+    # InnoDB settings
+    # -------------------------------------------------------------------
+    # innodb_buffer_pool_size: set to ~70-80% of available memory in production.
+    # Default (128MB) is used here; override via configMap.extraConfig.
+    default_storage_engine = InnoDB
+    innodb_flush_log_at_trx_commit = 1
+    innodb_log_buffer_size         = 16M
+    innodb_file_per_table          = ON
+
+    # -------------------------------------------------------------------
+    # Connection settings
+    # -------------------------------------------------------------------
+    max_connections        = 150
+    max_connect_errors     = 1000000
+    wait_timeout           = 28800
+    interactive_timeout    = 28800
+
+    # -------------------------------------------------------------------
+    # Logging
+    # -------------------------------------------------------------------
+    slow_query_log         = ON
+    long_query_time        = 2
+    log_queries_not_using_indexes = OFF
+
+    # -------------------------------------------------------------------
+    # Replication / GTID (enable when using replication)
+    # -------------------------------------------------------------------
+    # gtid_mode              = ON
+    # enforce_gtid_consistency = ON
+
+    [client]
+    default-character-set  = utf8mb4
+
+    [mysql]
+    default-character-set  = utf8mb4
+    {{- if .Values.configMap.extraConfig }}
+    {{ .Values.configMap.extraConfig | nindent 4 }}
+    {{- end }}
