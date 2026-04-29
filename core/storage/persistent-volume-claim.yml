@@ -1,0 +1,87 @@
+# ==============================================================================
+# PersistentVolumeClaim — Requesting Persistent Storage
+# ==============================================================================
+# A PVC is a request for storage. The PV controller matches this PVC to an
+# available PV that satisfies:
+#   1. storageClassName matches
+#   2. accessModes are compatible (PV must support all modes requested)
+#   3. capacity >= the requested amount
+#   4. For WaitForFirstConsumer StorageClass: node topology is compatible
+#
+# With storageClassName: local-storage (WaitForFirstConsumer), this PVC will
+# remain in Pending state until a pod that references it is scheduled. That is
+# expected and correct behaviour — see storageclass-local.yml for explanation.
+#
+# Apply:
+#   kubectl apply -f persistent-volume-claim.yml
+#   kubectl get pvc -n workloads
+#   # STATUS will be Pending until a pod referencing this PVC is scheduled.
+#
+# Once a pod using this PVC starts:
+#   kubectl get pvc -n workloads
+#   # STATUS should change to Bound
+#   kubectl get pv
+#   # local-pv-1 should show STATUS: Bound, CLAIM: workloads/app-data-claim
+# ==============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data-claim
+  namespace: workloads        # PVCs are namespace-scoped. The pod using this
+                              # PVC must be in the same namespace.
+
+  labels:
+    app.kubernetes.io/name: app-data-claim
+    app.kubernetes.io/instance: app-data-claim
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      PersistentVolumeClaim requesting 1Gi of local storage from the
+      local-storage StorageClass. Binds to a pre-created PV with matching
+      storageClass and access mode. With WaitForFirstConsumer binding mode,
+      this PVC remains Pending until a pod referencing it is scheduled.
+
+spec:
+  # storageClassName: must exactly match the StorageClass name.
+  # If you set storageClassName: "" (empty string), the PVC requests a PV
+  # with NO StorageClass (legacy pre-1.6 PVs). To use the cluster default
+  # StorageClass, OMIT the storageClassName field entirely.
+  storageClassName: local-storage
+
+  # accessModes: must be a subset of the PV's access modes.
+  # We request ReadWriteOncePod — the most restrictive mode, ensuring
+  # only one pod can mount this volume at any time.
+  accessModes:
+    - ReadWriteOncePod      # Exclusive access for one pod across the cluster.
+                            # Use ReadWriteOnce for older clusters (< 1.29) or
+                            # CSI drivers that don't support RWOP.
+
+  # volumeMode: Filesystem means the volume is mounted as a directory.
+  # Must match the PV's volumeMode. Filesystem is the default.
+  volumeMode: Filesystem
+
+  resources:
+    requests:
+      # Request 1Gi of storage. The bound PV must have at least 1Gi capacity.
+      # You can request less than the PV's capacity (1Gi from a 5Gi PV is fine).
+      # You cannot request more than what any available PV provides.
+      #
+      # After binding, you cannot decrease the request. You can increase it
+      # (if the StorageClass has allowVolumeExpansion: true), but resizing
+      # local hostPath volumes is not supported — you would need to migrate data.
+      storage: 1Gi
+
+  # Optional: selector to restrict which PVs can satisfy this claim.
+  # Useful when you have multiple PVs with the same StorageClass and want to
+  # bind to a specific one (by label).
+  # selector:
+  #   matchLabels:
+  #     storage-tier: ssd
+  #
+  # Or bind to a specific PV by name using the PV's volumeName:
+  # volumeName: local-pv-1
+  # This creates a direct binding to that specific PV, skipping normal matching.
