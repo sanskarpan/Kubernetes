@@ -1,0 +1,64 @@
+# ==============================================================================
+# overlays/prod/kustomization.yaml
+# Production environment overlay.
+#
+# Production characteristics:
+#   - Namespace: prod
+#   - Replicas: 4 (HA across 2+ availability zones)
+#   - Image: nginx:1.25 (pinned minor version; use digest in real prod)
+#   - Resources: larger limits to handle peak production traffic
+#
+# Production-specific considerations:
+#   1. Image pinning: In real production, pin to a digest (immutable reference).
+#      e.g.: newTag is replaced by newDigest: sha256:<hash>
+#   2. Replicas: 4 with zone spread = 2 per zone (assuming 2-zone setup).
+#      Adjust based on your traffic and zone count.
+#   3. Resource limits: sized based on actual production p99 memory usage + headroom.
+#   4. Multiple patches: prod applies both replica and resource patches separately
+#      for clearer diff/review history (one concern per file).
+#
+# To apply:
+#   kubectl apply -k core/workloads/deployment/kustomize/overlays/prod
+#
+# To preview:
+#   kustomize build core/workloads/deployment/kustomize/overlays/prod
+#
+# To diff against live cluster:
+#   kubectl diff -k core/workloads/deployment/kustomize/overlays/prod
+# ==============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+namespace: prod
+
+# 4 replicas → with topologySpreadConstraints in the base, these spread across
+# availability zones. 4 replicas in 2 zones = 2 per zone.
+replicas:
+- name: nginx
+  count: 4
+
+images:
+- name: nginx
+  # Production uses a pinned minor version for stability.
+  # In a hardened production setup, use newDigest instead of newTag:
+  # newDigest: sha256:<immutable-digest-from-ci-pipeline>
+  newTag: "1.25"
+
+# Production applies TWO patches, each focused on one concern:
+#   1. patch-replicas.yaml  — replica count (now handled by replicas: above,
+#      but shown here as a reference for teams that prefer explicit patches)
+#   2. patch-resources.yaml — resource limits sized for production traffic
+patches:
+- path: patch-resources.yaml
+  target:
+    kind: Deployment
+    name: nginx
+
+commonLabels:
+  environment: prod
+
+commonAnnotations:
+  kustomize.config.k8s.io/overlay: "prod"
