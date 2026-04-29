@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-blue
+  namespace: blue-green-demo
+  labels:
+    app.kubernetes.io/name: nginx-bluegreen
+    app.kubernetes.io/instance: nginx-blue
+    app.kubernetes.io/version: "1.24"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+    # The 'slot' label identifies this as the blue environment.
+    # This is for operational clarity — it doesn't directly affect traffic routing.
+    slot: blue
+  annotations:
+    kubernetes.io/description: "Blue deployment (v1 — nginx:1.24) — current production. Traffic is served from blue until the service selector is switched to green."
+spec:
+  replicas: 4
+
+  revisionHistoryLimit: 5
+  minReadySeconds: 10
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-bluegreen
+      app.kubernetes.io/instance: nginx-blue
+
+  # Blue deployment itself uses RollingUpdate for internal updates.
+  # The blue-green TRAFFIC SWITCH is done at the Service layer, not here.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx-bluegreen
+        app.kubernetes.io/instance: nginx-blue
+        app.kubernetes.io/version: "1.24"
+        app.kubernetes.io/component: webserver
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+        slot: blue
+        # THE KEY LABEL FOR BLUE-GREEN ROUTING:
+        # The service.yml selector includes 'version: v1' to route traffic to blue pods.
+        # When we want to switch to green, we change the service selector to 'version: v2'.
+        # Blue pods keep version: v1 and green pods have version: v2 — they never conflict.
+        version: v1
+      annotations:
+        kubernetes.io/description: "Blue (v1) NGINX pod — serves production traffic until green is promoted"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+      - name: nginx
+        # v1 image — the current production version.
+        image: nginx:1.24
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        volumeMounts:
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+        - name: tmp
+          mountPath: /tmp
+
+      volumes:
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
