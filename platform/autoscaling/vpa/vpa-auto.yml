@@ -1,0 +1,109 @@
+# ==============================================================================
+# VPA — AUTO MODE
+# ==============================================================================
+# VerticalPodAutoscaler for apache-deployment in the workloads namespace.
+# updateMode: Auto means VPA will evict pods and allow them to be recreated
+# with updated resource requests when recommendations diverge significantly
+# from current values.
+#
+# PREREQUISITES:
+#   1. VPA CRDs and controllers must be installed (see vpa/README.md)
+#   2. Metrics Server must be installed
+#   3. apache-deployment must exist in the workloads namespace
+#   4. PodDisruptionBudget should be configured before enabling Auto mode
+#
+# CAUTION:
+#   Do NOT use Auto mode alongside HPA scaling on CPU/memory for the same
+#   workload — they will conflict. If you use HPA on CPU/memory, keep VPA
+#   in Off mode and apply recommendations manually.
+#
+# Apply:
+#   kubectl apply -f vpa-auto.yml
+#
+# Read recommendations:
+#   kubectl describe vpa -n workloads nginx-vpa
+# ==============================================================================
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: nginx-vpa
+  namespace: workloads
+  labels:
+    # Note: VPA is a CRD — the app.kubernetes.io/* label set applies to the
+    # VPA object itself (metadata.labels), not to pods it manages.
+    app.kubernetes.io/name: nginx-vpa
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: apache
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      VPA in Auto mode for apache-deployment. Automatically right-sizes CPU and
+      memory requests based on observed usage. Evicts pods when recommendations
+      diverge significantly from current requests. Ensure a PodDisruptionBudget
+      is configured before enabling this in production.
+spec:
+  # ---------------------------------------------------------------------------
+  # targetRef — the workload this VPA manages
+  # VPA supports Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob
+  # ---------------------------------------------------------------------------
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: apache-deployment  # Must exist in the same namespace (workloads)
+
+  # ---------------------------------------------------------------------------
+  # updatePolicy — controls how VPA applies recommendations
+  #
+  # Modes:
+  #   Off      — recommendations only, no changes applied
+  #   Initial  — set requests at pod creation, never modify running pods
+  #   Auto     — evict pods to apply updated resource requests
+  # ---------------------------------------------------------------------------
+  updatePolicy:
+    updateMode: Auto
+
+    # minReplicas: Minimum number of replicas VPA requires before evicting any pod.
+    # VPA will NOT evict pods if doing so would bring the running replica count
+    # below this value. Set to 2+ for any production workload to ensure HA
+    # during VPA-triggered evictions.
+    # Default is 2 if not set; explicitly set here for clarity.
+    minReplicas: 2
+
+  # ---------------------------------------------------------------------------
+  # resourcePolicy — constrains VPA recommendations within safe bounds
+  #
+  # Without bounds, VPA could recommend requests larger than any node can
+  # provide (making pods unschedulable) or smaller than safe operational values
+  # (causing OOMKills or CPU starvation).
+  # ---------------------------------------------------------------------------
+  resourcePolicy:
+    containerPolicies:
+      - containerName: apache  # Must match the container name in the Deployment spec
+
+        # controlledResources — which resources VPA manages.
+        # Default is ["cpu", "memory"]. You can restrict to just ["memory"] if
+        # you want to manage CPU requests manually while letting VPA handle memory.
+        controlledResources: ["cpu", "memory"]
+
+        # minAllowed — VPA will never recommend values below these floors.
+        # Set these to the minimum safe operational values for your container.
+        # Too low → OOMKill (memory) or CPU starvation (cpu)
+        minAllowed:
+          cpu: 50m      # Never go below 50 millicores — prevents CPU starvation
+          memory: 64Mi  # Never go below 64Mi — prevents frequent OOMKills
+
+        # maxAllowed — VPA will never recommend values above these ceilings.
+        # Set these to less than the largest node's allocatable capacity.
+        # Too high → pod becomes unschedulable (no node has that much free)
+        maxAllowed:
+          cpu: "2"       # Cap at 2 cores — aligns with node capacity planning
+          memory: 2Gi    # Cap at 2Gi — prevents one pod monopolizing node memory
+
+        # controlledValues — whether VPA controls RequestsOnly or RequestsAndLimits.
+        # RequestsOnly: VPA only changes requests; limits remain unchanged.
+        #   Use this if you have a deliberate ratio between requests and limits.
+        # RequestsAndLimits: VPA scales both proportionally.
+        #   Use this for a 1:1 requests=limits setup (Guaranteed QoS class).
+        controlledValues: RequestsOnly

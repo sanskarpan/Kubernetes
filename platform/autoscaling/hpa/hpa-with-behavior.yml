@@ -1,0 +1,157 @@
+# ==============================================================================
+# HPA — BEHAVIOR BLOCK DEMONSTRATION (Slow Scale-Down)
+# ==============================================================================
+# This HPA intentionally uses a LOW CPU threshold (20%) so that the HPA will
+# attempt to scale during a demo even without heavy load. The primary purpose
+# of this file is to demonstrate every field in the behavior block with
+# detailed comments explaining the intent behind each value.
+#
+# Target: apache-deployment in the workloads namespace
+#
+# Apply:
+#   kubectl apply -f hpa-with-behavior.yml
+#
+# Watch decisions in real time:
+#   kubectl describe hpa -n workloads apache-hpa | grep -A 20 "Events:"
+# ==============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: apache-hpa
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: apache-hpa
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: apache
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      HPA for apache-deployment demonstrating the full behavior block.
+      CPU threshold is intentionally low (20%) for demo purposes.
+      In production, tune to 60–80% based on your observed utilization patterns.
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: apache-deployment  # Must exist in the workloads namespace
+
+  # min: 1 — allow scale-down to a single pod (acceptable for demo).
+  # In production HA workloads, use minReplicas: 2 or more.
+  minReplicas: 1
+  maxReplicas: 5
+
+  metrics:
+    # Intentionally low threshold for demo purposes.
+    # At 20%, most real pods will be "above" the threshold and HPA will scale up.
+    # Adjust to 60–80% for real workloads.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: AverageUtilization
+          averageUtilization: 20   # LOW — for demo only, change in production
+
+  # ---------------------------------------------------------------------------
+  # BEHAVIOR BLOCK — Full explanation of every field
+  # ---------------------------------------------------------------------------
+  behavior:
+    # -------------------------------------------------------------------------
+    # SCALE DOWN — deliberately slow and conservative
+    # -------------------------------------------------------------------------
+    scaleDown:
+      # stabilizationWindowSeconds (default: 300)
+      # ─────────────────────────────────────────
+      # The HPA controller evaluates metrics on a regular sync loop (~15s).
+      # Each sync produces a "recommendation" (desired replica count).
+      # The stabilization window accumulates all recommendations for this many
+      # seconds. For scale-DOWN, the HPA picks the MAXIMUM (highest) replica
+      # count from the window — the most conservative option.
+      #
+      # Why 300 seconds (5 minutes)?
+      #   - Traffic often has short quiet periods that quickly reverse
+      #   - Applications with slow startup (JVM, large ML models) need time
+      #     to become ready before they're needed again
+      #   - 5 minutes is a good balance between responsiveness and stability
+      #
+      # For bursty workloads, consider 600s. For always-on low-latency services,
+      # consider 120s. Avoid 0s for scale-down — it causes replica thrashing.
+      stabilizationWindowSeconds: 300
+
+      # selectPolicy (default: Max for scaleDown — confusingly named)
+      # ──────────────────────────────────────────────────────────────
+      # When multiple policies are defined, selectPolicy determines which one wins:
+      #   - "Max"  → pick the policy that ALLOWS THE MOST change (fast scaling)
+      #   - "Min"  → pick the policy that ALLOWS THE LEAST change (conservative)
+      #   - "Disabled" → prevent scaling in this direction entirely
+      #
+      # For scale-down, "Min" is the safest choice: it means we always take the
+      # smallest allowed reduction, even if another policy would allow more.
+      selectPolicy: Min
+
+      policies:
+        # Policy 1: Percent-based — remove at most 25% of current replicas per period
+        # ─────────────────────────────────────────────────────────────────────────────
+        # type: Percent — value is a percentage of currentReplicas
+        # value: 25 — can remove at most 25% of pods per periodSeconds
+        # periodSeconds: 60 — evaluated once per minute
+        #
+        # Example: currently 4 replicas → at most 1 pod removed per minute
+        # Example: currently 8 replicas → at most 2 pods removed per minute
+        #
+        # This is proportional and gets slower as you scale down, preventing
+        # a death-spiral where removing pods increases load on the remaining ones.
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+
+        # Policy 2: Absolute pod count — remove at most 1 pod per period
+        # ──────────────────────────────────────────────────────────────
+        # type: Pods — value is an absolute number of pods
+        # value: 1 — never remove more than 1 pod per minute
+        #
+        # This acts as a hard floor on scale-down speed regardless of replica count.
+        # For a deployment at maxReplicas (5), the Percent policy above would allow
+        # removing 1 pod (25% of 5 = 1.25 → floor 1). So both policies agree here.
+        # For larger fleets, this policy becomes the binding constraint.
+        #
+        # With selectPolicy: Min, if Percent allows 2 and Pods allows 1, we use 1.
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+
+    # -------------------------------------------------------------------------
+    # SCALE UP — fast and responsive
+    # -------------------------------------------------------------------------
+    scaleUp:
+      # stabilizationWindowSeconds: 0
+      # ─────────────────────────────
+      # For scale-UP, the stabilization window holds the MINIMUM recommendation.
+      # Setting it to 0 means: use only the current recommendation, don't look back.
+      # This allows immediate scale-up response when load spikes.
+      #
+      # Never set a large stabilization window for scale-up — users experience
+      # latency during the window while you wait to confirm the load is real.
+      # A spike lasting 30 seconds is very real to the users hitting it.
+      stabilizationWindowSeconds: 0
+
+      # selectPolicy: Max for scale-up — take the most aggressive policy.
+      # We want to add as many pods as possible per minute to absorb spikes fast.
+      selectPolicy: Max
+
+      policies:
+        # Scale up by at most 2 pods per minute (absolute)
+        # ─────────────────────────────────────────────────
+        # For small deployments (1–3 pods), this allows quick doubling.
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+
+        # Scale up by at most 100% (double) per minute (percentage-based)
+        # ─────────────────────────────────────────────────────────────────
+        # For larger deployments this kicks in: e.g., 4 pods → can add 4 more.
+        # With selectPolicy: Max, whichever allows MORE pods per minute wins.
+        - type: Percent
+          value: 100
+          periodSeconds: 60
