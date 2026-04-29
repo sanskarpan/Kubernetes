@@ -1,0 +1,211 @@
+# ==============================================================================
+# CONVERSION WEBHOOK — Service and stub Deployment for widget-converter
+# ==============================================================================
+# This file defines the Kubernetes resources that serve the CRD conversion
+# webhook for widgets.example.com (see conversion-webhook-crd.yml).
+#
+# The conversion webhook is an HTTPS server that:
+#   1. Receives POST requests to /convert from the Kubernetes API server
+#   2. Reads the ConversionReview request (objects in old version)
+#   3. Converts the objects to the desired version
+#   4. Returns a ConversionReview response with the converted objects
+#
+# IMPLEMENTING THE CONVERSION LOGIC:
+#   The stub Deployment below uses a placeholder image. Replace it with your
+#   actual webhook implementation. The controller-runtime library (Go) and the
+#   Python kubernetes-asyncio library both provide helpers for writing conversion
+#   webhooks. See:
+#     https://book.kubebuilder.io/multiversion-tutorial/conversion.html
+#     https://github.com/kubernetes-sigs/controller-runtime/tree/main/examples
+#
+# TLS REQUIREMENTS:
+#   The API server requires the webhook to use HTTPS. Options:
+#     1. cert-manager: create a Certificate resource and annotate the CRD with
+#        cert-manager.io/inject-ca-from to auto-inject the CA bundle.
+#     2. Self-signed cert: generate a cert, create a Secret, mount it in the
+#        Deployment, and base64-encode the CA into the CRD's caBundle field.
+#
+# Apply:
+#   kubectl apply -f conversion-webhook-service.yml
+#   # then apply the CRD:
+#   kubectl apply -f conversion-webhook-crd.yml
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: widget-system
+  labels:
+    app.kubernetes.io/name: widget-system
+    app.kubernetes.io/instance: widget-system
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: namespace
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: widget-converter
+  namespace: widget-system
+  labels:
+    app.kubernetes.io/name: widget-converter
+    app.kubernetes.io/instance: widget-converter
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+automountServiceAccountToken: false
+
+---
+# ==============================================================================
+# SERVICE — widget-converter
+# ==============================================================================
+# The CRD's conversion.webhook.clientConfig.service references this Service.
+# The API server sends ConversionReview POSTs to:
+#   https://widget-converter.widget-system.svc/convert
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: widget-converter
+  namespace: widget-system
+  labels:
+    app.kubernetes.io/name: widget-converter
+    app.kubernetes.io/instance: widget-converter
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Service fronting the widget-converter conversion webhook Deployment.
+      Referenced by the widgets.example.com CRD conversion configuration.
+spec:
+  selector:
+    app.kubernetes.io/name: widget-converter
+  ports:
+    # The CRD clientConfig references port 443.
+    # The webhook server inside the container listens on 9443 (non-privileged).
+    - name: https
+      port: 443
+      targetPort: 9443
+      protocol: TCP
+
+---
+# ==============================================================================
+# DEPLOYMENT — widget-converter (stub)
+# ==============================================================================
+# Replace the image with your actual conversion webhook implementation.
+# The server must:
+#   - Listen on :9443 with TLS
+#   - Handle POST /convert
+#   - Parse ConversionReview v1 and v1beta1 requests
+#   - Return a ConversionReview response with converted objects
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: widget-converter
+  namespace: widget-system
+  labels:
+    app.kubernetes.io/name: widget-converter
+    app.kubernetes.io/instance: widget-converter
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      Stub Deployment for the widgets.example.com CRD conversion webhook.
+      Replace the image with the actual webhook server implementation.
+spec:
+  replicas: 2 # Two replicas for HA — conversion webhooks are in the critical API path
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: widget-converter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: widget-converter
+        app.kubernetes.io/instance: widget-converter
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: webhook
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: widget-converter
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: webhook
+          # TODO: Replace with your actual conversion webhook image.
+          # The image must serve HTTPS on port 9443 with the /convert endpoint.
+          image: example.com/widget-converter:v1.0.0
+          ports:
+            - name: https
+              containerPort: 9443
+              protocol: TCP
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /tmp/tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp/webhook
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9443
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+          env:
+            - name: TLS_CERT_FILE
+              value: /tmp/tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /tmp/tls/tls.key
+
+      volumes:
+        # Mount the TLS certificate and private key from a Secret.
+        # Create the Secret with cert-manager or manually:
+        #   kubectl create secret tls widget-converter-tls \
+        #     --cert=tls.crt --key=tls.key -n widget-system
+        - name: tls-certs
+          secret:
+            secretName: widget-converter-tls
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
