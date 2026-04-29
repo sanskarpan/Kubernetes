@@ -1,0 +1,163 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-rolling
+  namespace: rolling-demo
+  labels:
+    app.kubernetes.io/name: nginx-rolling
+    app.kubernetes.io/instance: nginx-rolling
+    app.kubernetes.io/version: "1.24"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "NGINX webserver using Rolling Update strategy — zero-downtime deployments with maxSurge:1 maxUnavailable:0"
+spec:
+  # 4 replicas provides enough capacity for the rolling update to be visible:
+  # With maxSurge:1, up to 5 pods run during rollout.
+  # With maxUnavailable:0, at least 4 pods are always Ready (no capacity loss).
+  replicas: 4
+
+  revisionHistoryLimit: 5
+
+  # minReadySeconds: a new pod must be continuously Ready for this many seconds before
+  # the controller considers it 'available'. This adds a stabilization buffer — if your
+  # app has a brief startup period where it is Ready but then crashes (init flip-flopping),
+  # minReadySeconds catches this and slows the rollout to avoid cascading failures.
+  minReadySeconds: 10
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-rolling
+      app.kubernetes.io/instance: nginx-rolling
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxSurge: 1 — allow 1 extra pod above the desired 4 during rollout.
+      # This enables the "start new pod, then stop old pod" sequence that makes
+      # zero-downtime possible. Without surge, you would need maxUnavailable > 0.
+      maxSurge: 1
+
+      # maxUnavailable: 0 — ZERO-DOWNTIME GUARANTEE.
+      # No pod is terminated until a replacement is Ready.
+      # The readinessProbe below is what makes this guarantee meaningful —
+      # without it, "Ready" just means the container started, not that it serves traffic.
+      #
+      # CRITICAL: maxSurge and maxUnavailable cannot BOTH be 0 — the rollout would be
+      # unable to make progress (can't create new pods, can't delete old pods).
+      # Kubernetes validates this and rejects such configurations.
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx-rolling
+        app.kubernetes.io/instance: nginx-rolling
+        app.kubernetes.io/version: "1.24"
+        app.kubernetes.io/component: webserver
+        app.kubernetes.io/part-of: kube-platform
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        kubernetes.io/description: "NGINX v1 pod (nginx:1.24) — update image to nginx:1.25 to trigger rolling update"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101    # nginx user
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+      - name: nginx
+        image: nginx:1.24
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+
+        lifecycle:
+          preStop:
+            exec:
+              # WHY THIS MATTERS FOR ROLLING UPDATES:
+              # When Kubernetes decides to terminate a pod (during rollout), it:
+              # 1. Removes the pod from Service endpoints (stops new connections)
+              # 2. Runs the preStop hook
+              # 3. Sends SIGTERM to the container
+              # 4. Waits terminationGracePeriodSeconds for the process to exit
+              #
+              # The 'sleep 5' here creates a brief overlap where the pod is removed
+              # from endpoints BEFORE NGINX receives SIGTERM. This prevents the rare
+              # race condition where:
+              #   - kube-proxy removes the pod from iptables rules (async, takes 1-2s)
+              #   - New requests still arrive at the pod during that 1-2s window
+              #   - NGINX has already shut down and returns connection reset
+              # The sleep gives kube-proxy time to fully propagate the endpoint removal
+              # before NGINX starts refusing connections.
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+        # THE MOST IMPORTANT PROBE FOR ZERO-DOWNTIME ROLLING UPDATES.
+        # This probe gates when a pod joins the Service endpoint list.
+        # Kubernetes will NOT terminate an old pod until this probe succeeds on the new pod.
+        # Make sure this probe accurately reflects when your app is ready to serve traffic:
+        #   - DB connections established
+        #   - Config loaded
+        #   - Caches warmed
+        #   - Health dependencies satisfied
+        # A probe that returns 200 too early (before the app is truly ready) breaks
+        # the zero-downtime guarantee.
+        readinessProbe:
+          httpGet:
+            path: /         # In production: use /readyz or /healthz/ready endpoint
+            port: 8080
+          initialDelaySeconds: 5    # Wait for NGINX to start before first check
+          periodSeconds: 5          # Check every 5 seconds
+          timeoutSeconds: 3         # Probe times out after 3 seconds (network latency buffer)
+          failureThreshold: 3       # 3 consecutive failures = remove from endpoints (not a restart)
+          successThreshold: 1       # 1 success = add to endpoints
+
+        # livenessProbe triggers a restart if the container is alive but not functioning.
+        # This is SEPARATE from readiness — a pod can be live but not ready (under load,
+        # waiting for dependencies) and should stay running but not receive traffic.
+        livenessProbe:
+          httpGet:
+            path: /         # In production: use /livez or /healthz/live endpoint
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3   # 3 consecutive failures = restart the container
+
+        volumeMounts:
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+        - name: tmp
+          mountPath: /tmp
+
+      volumes:
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
