@@ -1,0 +1,125 @@
+# ==============================================================================
+# KYVERNO CLUSTERPOLICY — Require Memory Limits on All Containers
+# ==============================================================================
+# Validates that every container in every Pod has resources.limits.memory set.
+#
+# Why memory limits are required:
+#   Without a memory limit, a container can consume all available node memory,
+#   triggering the Linux OOM killer on other containers. Memory limits are the
+#   primary mechanism to prevent noisy-neighbor memory exhaustion.
+#
+# CPU limits are intentionally NOT required by this policy:
+#   CPU limits cause throttling even when the node has idle CPU cycles, degrading
+#   latency. Use CPU requests (for scheduling) but avoid CPU limits.
+#   See: https://home.robusta.dev/blog/stop-using-cpu-limits
+#
+# validationFailureAction: Audit
+#   Current mode is Audit — violations are logged and appear in PolicyReports
+#   but pods are NOT blocked. Change to Enforce after reviewing audit reports
+#   and fixing all existing violations.
+#
+# Change to Enforce after:
+#   1. Running in Audit mode for 2+ weeks
+#   2. Reviewing: kubectl get policyreport -A
+#   3. Fixing all violations in team Deployment YAML files
+#   4. Updating this file: validationFailureAction: Enforce
+#
+# Apply:
+#   kubectl apply -f require-resource-limits.yaml
+#
+# Check violations:
+#   kubectl get policyreport -A
+#   kubectl get clusterpolicyreport
+# ==============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  labels:
+    app.kubernetes.io/name: require-resource-limits
+    app.kubernetes.io/component: policy
+    app.kubernetes.io/part-of: platform-policies
+    app.kubernetes.io/managed-by: kyverno
+    app.kubernetes.io/version: "1.0.0"
+    environment: production
+  annotations:
+    kubernetes.io/description: >
+      Kyverno ClusterPolicy that validates all containers have resources.limits.memory
+      set. Prevents memory-unbounded containers from exhausting node memory and
+      causing OOM conditions for neighboring workloads.
+    # Policy metadata for compliance and audit tooling
+    policies.kyverno.io/title: "Require Container Memory Limits"
+    policies.kyverno.io/category: "Resource Management"
+    policies.kyverno.io/severity: "medium"
+    policies.kyverno.io/description: >
+      All containers must define resources.limits.memory. CPU limits are not
+      required (CPU throttling causes latency). This policy is in Audit mode —
+      change validationFailureAction to Enforce after fixing all violations.
+spec:
+  # ---------------------------------------------------------------------------
+  # validationFailureAction: Audit — log violations but do NOT block pods.
+  # Change to Enforce after reviewing audit reports and fixing violations.
+  # ---------------------------------------------------------------------------
+  validationFailureAction: Audit  # TODO: change to Enforce after reviewing audit reports
+
+  # background: true — Kyverno scans EXISTING resources in the cluster and
+  # generates PolicyReport objects showing which resources violate this policy.
+  # Without this, only new resources would be evaluated.
+  background: true
+
+  rules:
+    - name: check-container-memory-limits
+      # -----------------------------------------------------------------------
+      # match: Apply this rule to all Pods in all namespaces.
+      # Pods are the fundamental target — Deployments, StatefulSets, etc. create Pods.
+      # Kyverno's background controller also scans pod controller specs.
+      # -----------------------------------------------------------------------
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+
+      # -----------------------------------------------------------------------
+      # exclude: Exempt specific namespaces from this policy.
+      # System namespaces often have system-managed pods without explicit limits.
+      # -----------------------------------------------------------------------
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kyverno         # Kyverno's own pods may not have limits set by the chart
+
+      # -----------------------------------------------------------------------
+      # validate: Define the constraint and failure message.
+      # The pattern below must match the pod spec for the pod to be admitted.
+      # -----------------------------------------------------------------------
+      validate:
+        # message: Shown to the user when admission is denied (Enforce) or in PolicyReport (Audit).
+        # Keep it actionable — tell the user exactly what to fix and why.
+        message: >
+          All containers must have resources.limits.memory set to prevent memory
+          exhaustion on the node. Add resources.limits.memory to each container spec.
+          Example: limits: { memory: 256Mi }. CPU limits are NOT required — only memory.
+
+        # pattern: The pod spec must match this pattern for validation to pass.
+        # "?*" means the field must be present and non-empty.
+        # containers[]: this pattern is applied to EVERY container in the pod.
+        pattern:
+          spec:
+            containers:
+              - name: "*"              # Apply to every container (wildcard name)
+                resources:
+                  limits:
+                    memory: "?*"       # Must be set to any non-empty value
+
+            # Also validate initContainers if present
+            # Kyverno applies the pattern only to fields that exist in the resource,
+            # so this won't fail pods with no initContainers.
+            initContainers:
+              - name: "*"
+                resources:
+                  limits:
+                    memory: "?*"
