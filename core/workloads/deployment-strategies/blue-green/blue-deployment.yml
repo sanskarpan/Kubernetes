@@ -14,7 +14,7 @@ metadata:
     # This is for operational clarity — it doesn't directly affect traffic routing.
     slot: blue
   annotations:
-    kubernetes.io/description: "Blue deployment (v1 — nginx:1.24) — current production. Traffic is served from blue until the service selector is switched to green."
+    kubernetes.io/description: "Blue deployment (nginx:1.24) — production. Switch service selector to green to redirect traffic."
 spec:
   replicas: 4
 

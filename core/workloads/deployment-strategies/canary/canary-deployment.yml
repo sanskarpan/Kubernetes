@@ -12,7 +12,7 @@ metadata:
     app.kubernetes.io/managed-by: kubectl
     track: canary
   annotations:
-    kubernetes.io/description: "Canary v2 deployment (nginx:1.25) — serves ~20% of traffic with 1 replica alongside stable's 4 replicas. Monitor metrics before promoting."
+    kubernetes.io/description: "Canary v2 (nginx:1.25) — ~20% traffic with 1 replica. Monitor metrics before promoting to stable."
 spec:
   # 1 replica = 1/(4+1) = 20% of traffic when stable has 4 replicas.
   # Adjust this value to control traffic percentage:

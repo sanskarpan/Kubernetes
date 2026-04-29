@@ -11,7 +11,7 @@ metadata:
     app.kubernetes.io/part-of: kube-platform
     app.kubernetes.io/managed-by: kubectl
   annotations:
-    kubernetes.io/description: "ClusterIP service for nginx-recreate — during Recreate rollout, this service will return connection refused while pods are terminated"
+    kubernetes.io/description: "ClusterIP service for nginx-recreate — returns connection refused during Recreate rollout as pods terminate."
 spec:
   # ClusterIP is the default service type — a stable virtual IP within the cluster.
   # During the Recreate rollout, the endpoint slice for this service will temporarily

@@ -11,7 +11,7 @@ metadata:
     app.kubernetes.io/part-of: kube-platform
     app.kubernetes.io/managed-by: kubectl
   annotations:
-    kubernetes.io/description: "Service for canary demo — selects both stable and canary pods via shared app label, distributing traffic ~80/20 by replica ratio"
+    kubernetes.io/description: "Service for canary demo — selects stable and canary pods via shared label, ~80/20 traffic split."
 spec:
   type: ClusterIP
 

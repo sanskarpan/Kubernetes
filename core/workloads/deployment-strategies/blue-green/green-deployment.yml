@@ -12,7 +12,7 @@ metadata:
     app.kubernetes.io/managed-by: kubectl
     slot: green
   annotations:
-    kubernetes.io/description: "Green deployment (v2 — nginx:1.25) — staged environment. Apply this, verify health, then switch the service selector to route traffic here."
+    kubernetes.io/description: "Green deployment (nginx:1.25) — staged. Verify health, then switch service selector to route traffic."
 spec:
   # Green starts with the same replica count as blue.
   # In cost-sensitive environments, you may start green with 1 replica for testing,

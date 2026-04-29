@@ -12,7 +12,7 @@ metadata:
     app.kubernetes.io/managed-by: kubectl
     track: stable
   annotations:
-    kubernetes.io/description: "Stable v1 deployment (nginx:1.24) — serves 80% of traffic with 4 replicas. The canary deployment serves the remaining 20% with 1 replica."
+    kubernetes.io/description: "Stable v1 (nginx:1.24) — serves 80% of traffic with 4 replicas; canary serves 20% with 1 replica."
 spec:
   # 4 replicas = 4/(4+1) = 80% of traffic when canary has 1 replica.
   # The traffic split is determined by the ratio of Ready pods across both deployments.

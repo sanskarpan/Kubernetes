@@ -11,7 +11,7 @@ metadata:
     app.kubernetes.io/part-of: kube-platform
     app.kubernetes.io/managed-by: kubectl
   annotations:
-    kubernetes.io/description: "ClusterIP service for nginx-rolling — during Rolling Update, this service always has healthy endpoints (zero-downtime guarantee with readinessProbe + maxUnavailable:0)"
+    kubernetes.io/description: "ClusterIP service for nginx-rolling — always has healthy endpoints during Rolling Update (readinessProbe + maxUnavailable:0)."
 spec:
   type: ClusterIP
 
