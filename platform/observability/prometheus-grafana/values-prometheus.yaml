@@ -1,0 +1,172 @@
+# ==============================================================================
+# kube-prometheus-stack — Prometheus and Alertmanager Values
+# ==============================================================================
+# Helm values for prometheus-community/kube-prometheus-stack
+# Chart version: 65.1.1
+#
+# This file configures Prometheus and Alertmanager with persistent storage.
+# See values-grafana.yaml for Grafana-specific settings.
+#
+# Apply with install-stack.sh or:
+#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring \
+#     -f values-prometheus.yaml \
+#     -f values-grafana.yaml
+# ==============================================================================
+
+prometheus:
+  prometheusSpec:
+    # -------------------------------------------------------------------------
+    # Retention settings
+    # retention: keep metrics for 15 days (balance between history and storage cost)
+    # retentionSize: evict oldest data if storage exceeds 10GiB (safety valve)
+    # Both limits apply — whichever is hit first triggers eviction.
+    # -------------------------------------------------------------------------
+    retention: 15d
+    retentionSize: 10GiB
+
+    # -------------------------------------------------------------------------
+    # Scrape interval — how often Prometheus scrapes each target
+    # 30s is a balance between freshness and write throughput.
+    # For alerting on fast-moving metrics, consider 15s.
+    # -------------------------------------------------------------------------
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+
+    # -------------------------------------------------------------------------
+    # Persistent storage for Prometheus data
+    # Without this, data is lost on pod restart (emptyDir).
+    # storageClassName: standard — adjust to your cluster's storage class.
+    # storage: 20Gi — minimum for 15d retention on a busy cluster.
+    # Monitor usage with: kubectl exec -n monitoring <prometheus-pod> -- df -h /prometheus
+    # -------------------------------------------------------------------------
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard  # Replace with your StorageClass (e.g., gp3, premium-rwo)
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+
+    # -------------------------------------------------------------------------
+    # ruleSelector and serviceMonitorSelector
+    # Setting to {} means Prometheus picks up ALL PrometheusRules and
+    # ServiceMonitors in ALL namespaces. Useful for a shared cluster
+    # monitoring stack. Restrict with matchLabels if you want isolation.
+    # -------------------------------------------------------------------------
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+
+    # -------------------------------------------------------------------------
+    # Additional scrape configs (raw Prometheus YAML format)
+    # Use for targets that can't be represented as ServiceMonitors (e.g.,
+    # external systems, bare-metal nodes, or legacy services).
+    # -------------------------------------------------------------------------
+    additionalScrapeConfigs: []
+    # Example:
+    # additionalScrapeConfigs:
+    #   - job_name: 'external-api'
+    #     static_configs:
+    #       - targets: ['api.example.com:9090']
+
+    # -------------------------------------------------------------------------
+    # Resources for the Prometheus server
+    # Adjust based on cluster size and metric cardinality.
+    # Large clusters (100+ nodes, many custom metrics) may need 4Gi+ memory.
+    # -------------------------------------------------------------------------
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+
+# ==============================================================================
+# Alertmanager
+# ==============================================================================
+alertmanager:
+  alertmanagerSpec:
+    # Persistent storage for Alertmanager (silences, notification state)
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+  # Alertmanager configuration — routes and receivers
+  # For production, configure Slack, PagerDuty, or email notifications.
+  # Override this section or use a separate Secret for sensitive credentials.
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'cluster', 'namespace']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'null'          # Default: discard. Replace with real receiver in production.
+      routes:
+        - receiver: 'null'
+          match:
+            alertname: Watchdog  # Built-in heartbeat alert — always firing, not an error
+    receivers:
+      - name: 'null'             # Null receiver — replace with slack/pagerduty/email
+    inhibit_rules:
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'cluster', 'namespace']
+
+# ==============================================================================
+# node-exporter — collects host-level metrics
+# ==============================================================================
+nodeExporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+# ==============================================================================
+# kube-state-metrics — exposes Kubernetes object state as metrics
+# Provides: deployment replicas, pod status, PVC status, node conditions, etc.
+# ==============================================================================
+kubeStateMetrics:
+  enabled: true
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+# ==============================================================================
+# Prometheus Operator
+# ==============================================================================
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
