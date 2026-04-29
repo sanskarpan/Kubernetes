@@ -1,0 +1,51 @@
+---
+# PodDisruptionBudget — Availability during voluntary disruptions
+# ================================================================
+# A PDB limits how many pods can be simultaneously unavailable during
+# VOLUNTARY disruptions. Examples of voluntary disruptions:
+#   - Node drain (cluster upgrade, node maintenance, spot instance termination)
+#   - Rolling Deployment update
+#   - Horizontal scaling down
+#   - Manual pod deletion
+#
+# PDB does NOT protect against INVOLUNTARY disruptions:
+#   - Node hardware failure
+#   - Kernel panic
+#   - Network partition
+#   - OOMKill
+#
+# Without a PDB, a cluster upgrade could drain multiple nodes simultaneously,
+# taking all your pods offline at once.
+#
+# IMPORTANT: PDB + HPA interaction
+# If minReplicas (HPA) == minAvailable (PDB), the cluster cannot scale down
+# without violating the PDB. Always set: minReplicas > minAvailable.
+# With replicas: 2 and minAvailable: 1, scaling down to 1 is allowed.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nginx
+  namespace: production-baseline
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.27"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >-
+      PDB for nginx. Ensures at least 1 pod remains available during node drains
+      and rolling updates. With 2 replicas, at most 1 pod can be disrupted at a time.
+spec:
+  # minAvailable: at least 1 pod must remain available during a voluntary disruption.
+  # With replicas: 2, this allows draining 1 pod at a time.
+  #
+  # Alternative: use maxUnavailable instead of minAvailable.
+  # maxUnavailable: 1  — at most 1 pod can be down at a time (percentage also valid: "50%")
+  minAvailable: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx
+      app.kubernetes.io/instance: nginx
