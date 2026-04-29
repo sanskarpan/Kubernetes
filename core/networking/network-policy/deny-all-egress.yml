@@ -1,0 +1,149 @@
+# ==============================================================================
+# NetworkPolicy: Deny-All Egress
+# ==============================================================================
+# This policy blocks ALL outbound traffic from every pod in the namespace.
+# Apply it first, then add specific allow policies for required egress paths.
+#
+# WHAT THIS POLICY DOES:
+#   - podSelector: {} matches ALL pods in the namespace (wildcard selector).
+#   - policyTypes: [Egress] — governs outbound connections only.
+#   - egress: [] — explicitly empty list = deny all egress.
+#     (Omitting the egress field when Egress is listed in policyTypes has the
+#     same effect as egress: [] — all egress is denied.)
+#
+# IMMEDIATE EFFECTS:
+#   After applying this policy, pods in this namespace CANNOT:
+#     - Resolve DNS hostnames (CoreDNS queries on port 53 are blocked).
+#     - Connect to other pods in any namespace.
+#     - Reach the Kubernetes API server.
+#     - Make any external HTTPS/HTTP calls.
+#
+# HOW TO BUILD A SAFE EGRESS POSTURE (apply in order):
+#   1. kubectl apply -f deny-all-egress.yml         # Block everything
+#   2. kubectl apply -f allow-dns-egress.yml        # Restore DNS (required)
+#   3. kubectl apply -f allow-to-database.yml       # App-specific egress
+#   4. kubectl apply -f allow-prometheus-scraping.yml  # Monitoring egress
+#
+# Because NetworkPolicy rules are ADDITIVE (union, not intersection), each
+# additional policy only opens specific holes — it never overrides deny-all.
+#
+# NAMESPACE: Update "workloads" to the target namespace before applying.
+#
+# Apply:
+#   kubectl apply -f deny-all-egress.yml
+#   kubectl describe networkpolicy default-deny-egress -n workloads
+# ==============================================================================
+
+# ── Policy 1: Base deny-all egress ────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: default-deny-egress
+    app.kubernetes.io/instance: default-deny-egress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Default deny-all egress NetworkPolicy for the workloads namespace. Blocks
+      all outbound traffic from every pod. Apply this first, then add specific
+      allow policies for DNS (port 53), application backends, and monitoring.
+      Implements the zero-trust principle: deny by default, allow by exception.
+
+spec:
+  # Empty podSelector = matches ALL pods in the namespace.
+  podSelector: {}
+
+  policyTypes:
+    - Egress
+
+  # egress: [] — explicitly empty means NO egress is permitted.
+  # All outbound TCP, UDP, and SCTP connections are dropped.
+  egress: []
+
+---
+# ==============================================================================
+# Companion Policy: Safe Egress Exceptions
+# ==============================================================================
+# This second policy demonstrates the most common safe egress exceptions that
+# most workloads need. Apply only the rules relevant to your application.
+#
+# This policy and "default-deny-egress" COEXIST — NetworkPolicy is additive.
+# The deny-all blocks everything; this policy opens specific holes.
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-safe-egress
+  namespace: workloads
+
+  labels:
+    app.kubernetes.io/name: allow-safe-egress
+    app.kubernetes.io/instance: allow-safe-egress
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Companion to default-deny-egress. Opens the minimum required egress holes:
+      DNS to kube-dns (port 53), Kubernetes API server (port 443), and
+      same-namespace pod communication. Apply after deny-all-egress to restore
+      baseline cluster functionality while maintaining zero-trust egress posture.
+
+spec:
+  podSelector: {}
+
+  policyTypes:
+    - Egress
+
+  egress:
+    # ── Exception 1: DNS — required for all hostname resolution ───────────────
+    # Without this rule, pods cannot resolve ANY hostname after deny-all-egress.
+    # See allow-dns-egress.yml for the standalone version of this rule.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+
+    # ── Exception 2: Kubernetes API server (port 443) ─────────────────────────
+    # Required if pods use kubectl, client-go, or any operator/controller pattern.
+    # The API server's ClusterIP is in the 10.96.0.0/12 range by default.
+    # Find the exact IP: kubectl get svc kubernetes -n default -o jsonpath='{.spec.clusterIP}'
+    # If pods do NOT call the K8s API, remove this rule to reduce attack surface.
+    - ports:
+        - protocol: TCP
+          port: 443
+      to:
+        - ipBlock:
+            # The Kubernetes API server Service CIDR. Adjust for your cluster.
+            # For kubeadm clusters: typically 10.96.0.1/32 (first IP in service CIDR).
+            cidr: 10.96.0.1/32
+
+    # ── Exception 3: Same-namespace pod-to-pod communication ─────────────────
+    # Allows pods in this namespace to communicate with each other freely.
+    # Useful for microservices that call each other within the same namespace.
+    # Remove this if you want pod-to-pod isolation within the namespace
+    # (then add explicit per-service allow rules instead).
+    - to:
+        - podSelector: {}
+          # No namespaceSelector here means "same namespace as this policy".
+          # This is equivalent to:
+          #   namespaceSelector:
+          #     matchLabels:
+          #       kubernetes.io/metadata.name: workloads
