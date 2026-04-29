@@ -1,0 +1,72 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "apache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apache.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: "HPA for the Apache deployment. Scales on CPU and memory utilisation."
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "apache.fullname" . }}
+
+  # Minimum replicas — must be >= 2 when using a PodDisruptionBudget with minAvailable: 1.
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+
+  # Maximum replicas — set based on cluster capacity and cost budget.
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+
+  metrics:
+    # CPU utilisation — scale out when average CPU across all pods exceeds the target.
+    # Uses resource requests as the 100% baseline, so accurate requests are critical.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+
+    # Memory utilisation — scale out when average memory across all pods exceeds the target.
+    # Note: memory-based scaling is less reactive than CPU because memory is not released
+    # immediately. Use this as a safety net alongside CPU scaling.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+
+  behavior:
+    # Scale-up behavior — aggressive scaling to handle sudden traffic spikes.
+    scaleUp:
+      # Allow scale-up immediately when the threshold is crossed.
+      stabilizationWindowSeconds: 0
+      policies:
+        # Allow adding up to 4 pods per 60 seconds (fast scale-out).
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+        # Alternative: allow doubling the pod count every 60 seconds.
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+      # selectPolicy: Max means the most aggressive of the above policies is used.
+      selectPolicy: Max
+
+    # Scale-down behavior — conservative scaling to avoid oscillation (flapping).
+    scaleDown:
+      # Wait for this many seconds of sustained low utilisation before scaling down.
+      # Prevents removing pods that are needed during brief traffic dips.
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDownStabilizationWindowSeconds }}
+      policies:
+        # Remove at most 1 pod every 60 seconds during scale-down.
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      # selectPolicy: Min means the most conservative policy is used.
+      selectPolicy: Min
+{{- end }}
