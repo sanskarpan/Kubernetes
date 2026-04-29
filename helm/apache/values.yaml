@@ -1,0 +1,299 @@
+# =============================================================================
+# Apache Helm Chart — Default Values
+# =============================================================================
+# All values here act as defaults and are intended to be overridden by
+# environment-specific values files (-f values-prod.yaml).
+#
+# Every property has a comment explaining its purpose and any production notes.
+# =============================================================================
+
+# Number of pod replicas.
+# Production: set to >= 2 to ensure high availability and support PodDisruptionBudget.
+replicaCount: 2
+
+image:
+  # Container image repository. Do not include the tag here.
+  repository: httpd
+
+  # Image pull policy.
+  # Production: use IfNotPresent with a pinned digest (not :latest) to ensure
+  # reproducible deployments and avoid unexpected updates.
+  pullPolicy: IfNotPresent
+
+  # Image tag. Overrides Chart.AppVersion when set.
+  # Production: prefer digest pinning over mutable tags (see 'digest' below).
+  tag: "2.4"
+
+  # Image digest — recommended for production for cryptographic image verification.
+  # When set, 'tag' is ignored and the image is pulled by digest.
+  # Generate: docker inspect --format='{{index .RepoDigests 0}}' httpd:2.4
+  # digest: sha256:abc123...
+
+# Image pull secrets for private container registries.
+# Create secrets with: kubectl create secret docker-registry my-secret --docker-server=...
+# Example: [{ name: my-pull-secret }]
+imagePullSecrets: []
+
+# Override the chart name portion of resource names.
+# Useful when installing multiple releases of this chart in the same namespace.
+nameOverride: ""
+
+# Override the full resource name prefix (overrides both chart and release names).
+fullnameOverride: ""
+
+serviceAccount:
+  # Whether to create a dedicated ServiceAccount for this workload.
+  # Best practice: always create a dedicated SA — never use the 'default' SA.
+  create: true
+
+  # Disable automatic mounting of the service account token.
+  # Opt-in per workload: set automountServiceAccountToken: true on the Pod spec
+  # only for workloads that genuinely need to call the Kubernetes API.
+  automount: false
+
+  # Annotations to add to the ServiceAccount.
+  # Useful for IRSA (IAM Roles for Service Accounts on EKS) or Workload Identity (GKE):
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/my-role
+  annotations: {}
+
+  # Name of the ServiceAccount to use.
+  # If empty and create=true, a name is generated using the fullname helper.
+  name: ""
+
+# Pod-level annotations.
+# Common uses:
+#   - Prometheus scraping: prometheus.io/scrape: "true"
+#   - Vault agent injection: vault.hashicorp.com/agent-inject: "true"
+#   - Datadog APM: ad.datadoghq.com/apache.check_names: '["apache"]'
+podAnnotations:
+  # Tells kubectl which container is the primary one (for logs, exec, etc.)
+  kubectl.kubernetes.io/default-container: apache
+
+# Additional pod-level labels.
+# These are merged with the standard app.kubernetes.io/* labels.
+podLabels: {}
+
+# Pod-level security context — applies to ALL containers in the pod.
+# These settings establish the security baseline for the entire pod.
+podSecurityContext:
+  # Reject containers that run as root (UID 0).
+  # This is enforced before the container starts.
+  runAsNonRoot: true
+
+  # Run as UID 33 (www-data). The Apache image must support this user.
+  # Verify with: docker run --rm httpd:2.4 id www-data
+  runAsUser: 33
+
+  # Set the owning GID for volume mounts. Allows the process to read/write volumes.
+  fsGroup: 33
+
+  # Apply the RuntimeDefault seccomp profile — restricts syscalls to a safe allowlist.
+  # This is the minimum recommended seccomp profile; consider Localhost for stricter control.
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context — applied to the apache container specifically.
+securityContext:
+  # Prevent the container from gaining additional privileges via setuid binaries.
+  allowPrivilegeEscalation: false
+
+  # Mount the root filesystem as read-only. Requires explicit writable volumes
+  # for any paths the app writes to (e.g., /tmp, log directories).
+  readOnlyRootFilesystem: true
+
+  # Drop all Linux capabilities. Add back only what is strictly required.
+  # Apache running on port 80 requires NET_BIND_SERVICE if not using a proxy;
+  # on Kubernetes, prefer port 8080 and a Service to avoid needing this capability.
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  # Service type.
+  # - ClusterIP: internal traffic only (recommended; use Ingress for external access)
+  # - NodePort: exposes on each node's IP (use for non-Ingress external access)
+  # - LoadBalancer: provisions a cloud load balancer (expensive; prefer Ingress)
+  type: ClusterIP
+
+  # Port the Service exposes.
+  port: 80
+
+ingress:
+  # Enable Ingress resource creation.
+  # Requires an Ingress controller (e.g., ingress-nginx, Traefik, AWS ALB) installed.
+  enabled: false
+
+  # IngressClass name — must match an available IngressClass in the cluster.
+  className: nginx
+
+  # Ingress-controller-specific annotations.
+  # Examples:
+  #   nginx.ingress.kubernetes.io/rewrite-target: /
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  annotations: {}
+
+  hosts:
+    - host: apache.example.local
+      paths:
+        - path: /
+          # Prefix: matches any path starting with /
+          # Exact: matches only the exact path
+          # ImplementationSpecific: controller-defined semantics
+          pathType: Prefix
+
+  # TLS configuration. Requires cert-manager or manually created TLS secrets.
+  # tls:
+  #   - secretName: apache-tls
+  #     hosts:
+  #       - apache.example.local
+  tls: []
+
+# Container resource requests and limits.
+# Requests: what the scheduler uses to place the pod.
+# Limits: hard upper bounds; exceeding memory limit = OOMKilled.
+#
+# Production guidance:
+#   - Set requests based on p50 observed usage.
+#   - Set memory limit at ~2x the p99 observed usage to prevent OOM on spikes.
+#   - CPU limits are intentionally omitted: CPU throttling causes latency spikes
+#     and the Kubernetes scheduler already uses requests for bin-packing.
+#     Monitor CPU usage and adjust requests if pods are consistently near the limit.
+resources:
+  requests:
+    cpu: 100m      # 0.1 vCPU — baseline Apache serving static content
+    memory: 128Mi  # 128 MiB — adjust based on actual usage metrics
+  limits:
+    # CPU limit intentionally omitted to avoid CPU throttling.
+    # See: https://erickhun.com/posts/kubernetes-faster-services-no-cpu-limits/
+    memory: 128Mi  # Hard OOM protection
+
+# Liveness probe — detects a hung or deadlocked process and restarts the container.
+# IMPORTANT: The liveness probe must be cheap and reliable. If it fails, the
+# container is killed. Do NOT check external dependencies in liveness probes.
+livenessProbe:
+  httpGet:
+    path: /
+    port: http   # Named port defined in the container spec
+  initialDelaySeconds: 10   # Wait before the first probe (allow container to start)
+  periodSeconds: 15         # Probe every 15 seconds
+  failureThreshold: 3       # Kill container after 3 consecutive failures (45s)
+
+# Readiness probe — signals when the container is ready to receive traffic.
+# Failing readiness probe removes the pod from Service endpoints (no traffic).
+# IMPORTANT: Readiness probes MUST NOT check external dependencies — they are
+# evaluated on every sync. Use a dedicated /health endpoint for local state only.
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3   # Remove from endpoint pool after 3 failures (30s)
+
+# Startup probe — gives slow-starting containers time to initialize before liveness
+# kicks in. The container has failureThreshold * periodSeconds seconds to start.
+# Here: 30 * 10 = 300 seconds (5 minutes) before liveness takes over.
+startupProbe:
+  httpGet:
+    path: /
+    port: http
+  failureThreshold: 30
+  periodSeconds: 10
+
+autoscaling:
+  # Enable Horizontal Pod Autoscaler.
+  enabled: false
+
+  # Minimum number of replicas (should match or exceed replicaCount when enabled).
+  minReplicas: 2
+
+  # Maximum number of replicas. Set based on cluster capacity and cost constraints.
+  maxReplicas: 10
+
+  # Target CPU utilisation percentage across all pods.
+  # Scale out when average CPU across all pods exceeds this threshold.
+  targetCPUUtilizationPercentage: 70
+
+  # Target memory utilisation percentage.
+  targetMemoryUtilizationPercentage: 80
+
+  # Stabilization window for scale-down decisions.
+  # Prevents flapping by requiring the scale-down condition to be true for this
+  # many seconds before actually scaling down.
+  scaleDownStabilizationWindowSeconds: 300
+
+# PodDisruptionBudget — ensures minimum availability during voluntary disruptions
+# such as node drains, cluster upgrades, or rolling deployments.
+podDisruptionBudget:
+  enabled: true
+  # At least 1 pod must remain available at all times.
+  # With replicaCount: 2, this allows only 1 pod to be disrupted at a time.
+  minAvailable: 1
+
+# Extra volumes to mount into the pod.
+# Required because readOnlyRootFilesystem: true means the container cannot write
+# to any path in the root filesystem. Apache needs a writable /tmp directory.
+volumes:
+  - name: tmp
+    emptyDir: {}   # In-memory scratch space; lost on pod restart
+
+# Volume mounts for the apache container.
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+# Node selector — constrain pods to nodes with specific labels.
+# Example: { kubernetes.io/os: linux, node-role: web }
+nodeSelector: {}
+
+# Tolerations — allow pods to be scheduled on tainted nodes.
+# Example:
+# tolerations:
+#   - key: "dedicated"
+#     operator: "Equal"
+#     value: "web"
+#     effect: "NoSchedule"
+tolerations: []
+
+# Affinity rules — fine-grained pod placement control.
+# The default configuration uses pod anti-affinity to spread replicas across
+# nodes for high availability. If a node fails, not all pods are lost.
+affinity:
+  podAntiAffinity:
+    # preferredDuringScheduling: best-effort — the scheduler tries to honour this
+    # but places the pod even if it cannot. Use requiredDuringScheduling for strict HA.
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100   # Highest preference weight (1–100)
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              # Matches other apache pods from this chart
+              app.kubernetes.io/name: apache
+          # Spread across different nodes
+          topologyKey: kubernetes.io/hostname
+
+# Deployment update strategy.
+# RollingUpdate: replaces pods incrementally (zero-downtime deployments).
+# Recreate: kills all pods first, then creates new ones (causes downtime).
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    # Maximum number of pods that can be created above the desired replicaCount.
+    maxSurge: 1
+    # Maximum number of pods that can be unavailable during the update.
+    # 0 = no pods go down until a new pod is Ready (zero-downtime guarantee).
+    maxUnavailable: 0
+
+# Number of old ReplicaSets to retain for rollback.
+# Higher values consume etcd space. 5 is a reasonable balance.
+revisionHistoryLimit: 5
+
+# Minimum seconds a newly created pod should be Ready before it is considered Available.
+# Protects against flapping: a pod is not counted as available until it has been
+# ready for this many seconds, preventing premature traffic during startup.
+minReadySeconds: 10
+
+# Time the kubelet waits after sending SIGTERM before sending SIGKILL.
+# Must be longer than your application's graceful shutdown time.
+# Apache default graceful shutdown: ~30s. Set to 60s for safety margin.
+terminationGracePeriodSeconds: 60

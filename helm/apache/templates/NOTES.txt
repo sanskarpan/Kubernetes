@@ -1,0 +1,83 @@
+============================================================
+  Apache Helm Chart — Deployment Complete
+  Release  : {{ .Release.Name }}
+  Namespace: {{ .Release.Namespace }}
+  Chart    : {{ .Chart.Name }}-{{ .Chart.Version }}
+  App      : Apache HTTP Server {{ .Chart.AppVersion }}
+============================================================
+
+1. Verify the deployment is running:
+
+   kubectl rollout status deployment/{{ include "apache.fullname" . }} \
+     -n {{ .Release.Namespace }}
+
+   kubectl get pods -l {{ include "apache.selectorLabels" . | replace ": " "=" | replace "\n" "," }} \
+     -n {{ .Release.Namespace }}
+
+2. Access the application:
+
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+
+{{- else if contains "NodePort" .Values.service.type }}
+
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "apache.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo "http://${NODE_IP}:${NODE_PORT}"
+
+{{- else if contains "LoadBalancer" .Values.service.type }}
+
+  NOTE: It may take a few minutes for the LoadBalancer IP to be provisioned.
+  Watch for the EXTERNAL-IP column to become available:
+
+  kubectl get service {{ include "apache.fullname" . }} \
+    -n {{ .Release.Namespace }} \
+    --watch
+
+  export SERVICE_IP=$(kubectl get service {{ include "apache.fullname" . }} \
+    -n {{ .Release.Namespace }} \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo "http://${SERVICE_IP}:{{ .Values.service.port }}"
+
+{{- else if contains "ClusterIP" .Values.service.type }}
+
+  The service is only accessible within the cluster (ClusterIP).
+  Use port-forward for local development:
+
+  kubectl port-forward service/{{ include "apache.fullname" . }} \
+    8080:{{ .Values.service.port }} \
+    -n {{ .Release.Namespace }}
+
+  Then open: http://localhost:8080
+
+{{- end }}
+
+3. Run the Helm test to verify connectivity:
+
+   helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+4. View logs:
+
+   kubectl logs -l {{ include "apache.selectorLabels" . | replace ": " "=" | replace "\n" "," }} \
+     -n {{ .Release.Namespace }} \
+     --tail=100 -f
+
+5. Upgrade the release:
+
+   helm upgrade {{ .Release.Name }} ./helm/apache \
+     -n {{ .Release.Namespace }} \
+     -f values-prod.yaml \
+     --atomic \
+     --timeout 5m
+
+6. Roll back to the previous release:
+
+   helm rollback {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+7. Uninstall the release:
+
+   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

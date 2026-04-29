@@ -1,0 +1,38 @@
+# Patterns to ignore when building packages.
+# Helm evaluates these patterns relative to the chart root.
+
+# Compiled binary archives
+*.tgz
+
+# Version control
+.git
+.gitignore
+.gitmodules
+.gitattributes
+
+# Helm artefacts (avoid packaging an already-packaged chart)
+.helmignore
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing and CI
+.circleci/
+.github/
+.travis.yml
+.gitlab-ci.yml
+
+# Documentation that should not be shipped in the chart archive
+docs/
+
+# Node.js (if tooling exists at chart root)
+node_modules/

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "apache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apache.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: "ClusterIP Service for the Apache HTTP Server deployment."
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      # targetPort must match the named port in the container spec.
+      targetPort: http
+      protocol: TCP
+      # Name the service port — required when using multiple ports or with Istio.
+      name: http
+  # Selector must match the pod template's selectorLabels exactly.
+  selector:
+    {{- include "apache.selectorLabels" . | nindent 4 }}

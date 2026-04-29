@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "apache.fullname" . }}-test-connection
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    kubernetes.io/description: "Helm test pod — verifies HTTP connectivity to the Apache service."
+    # This annotation marks the pod as a Helm test. It is run by `helm test <release>`.
+    "helm.sh/hook": test
+    # Delete the test pod after it completes (pass or fail).
+    # Options: before-hook-creation, keep, hook-succeeded, hook-failed
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  # Test pod runs as a non-root user with a restricted security context,
+  # consistent with the production standards of this chart.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534   # nobody
+    seccompProfile:
+      type: RuntimeDefault
+
+  restartPolicy: Never   # The test pod must not be restarted on failure
+
+  containers:
+    - name: wget
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      # Send an HTTP GET to the Apache service and verify a 200 response.
+      # wget returns exit code 1 on any non-2xx response, which causes the
+      # test pod to enter a Failed state and `helm test` to report failure.
+      command:
+        - wget
+        - --spider                        # Do not download the body
+        - --server-response               # Print response headers for debugging
+        - --tries=3                       # Retry up to 3 times
+        - --timeout=10                    # 10 second timeout per attempt
+        - "http://{{ include "apache.fullname" . }}:{{ .Values.service.port }}/"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 16Mi

@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apache.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: "Apache HTTP Server deployment managed by Helm."
+spec:
+  # Number of pod replicas. Controlled by HPA when autoscaling.enabled=true.
+  # When HPA is enabled, this field is managed by the HPA controller and changes
+  # here will be overwritten. Use minReplicas/maxReplicas in the HPA instead.
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+
+  # Selector is IMMUTABLE after creation. Never change selectorLabels.
+  selector:
+    matchLabels:
+      {{- include "apache.selectorLabels" . | nindent 6 }}
+
+  # Rolling update strategy — controls how pods are replaced during updates.
+  strategy:
+    type: {{ .Values.strategy.type }}
+    {{- if eq .Values.strategy.type "RollingUpdate" }}
+    rollingUpdate:
+      # maxUnavailable: 0 = zero-downtime (no pods go down until new pod is Ready)
+      maxUnavailable: {{ .Values.strategy.rollingUpdate.maxUnavailable }}
+      # maxSurge: 1 = one extra pod is created above replicaCount during the update
+      maxSurge: {{ .Values.strategy.rollingUpdate.maxSurge }}
+    {{- end }}
+
+  # Number of old ReplicaSets to retain for rollback via `helm rollback` or
+  # `kubectl rollout undo`. Higher values use more etcd storage.
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+
+  # Pod must be Ready for this many seconds before it is considered Available.
+  # Prevents premature traffic during container startup transients.
+  minReadySeconds: {{ .Values.minReadySeconds }}
+
+  template:
+    metadata:
+      labels:
+        # Selector labels must be present on the pod template.
+        {{- include "apache.selectorLabels" . | nindent 8 }}
+        # Full label set (includes version, component, etc.) for observability.
+        {{- include "apache.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Trigger a rolling restart when the ConfigMap or Secret changes by
+        # embedding a checksum annotation. Without this, pods may run stale config.
+        # Example (add in a real chart with configmap):
+        # checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # Use the dedicated ServiceAccount (not the namespace default).
+      serviceAccountName: {{ include "apache.serviceAccountName" . }}
+
+      # Do not auto-mount the ServiceAccount token unless the pod needs API access.
+      # This reduces the blast radius if the pod is compromised.
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+
+      # Image pull secrets for private registries.
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # Pod-level security context — applies to all containers and init containers.
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      # Time to wait after SIGTERM before forcibly killing (SIGKILL) the pod.
+      # Must be longer than your application's graceful drain time.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+
+      containers:
+        - name: apache
+          image: {{ include "apache.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          # Container-level security context — overrides pod-level where applicable.
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+
+          ports:
+            - name: http         # Named port — referenced by probes and Service
+              containerPort: 80
+              protocol: TCP
+
+          # Lifecycle hooks — run before the container stops.
+          # preStop: gives the container time to finish in-flight requests before
+          # SIGTERM is sent. The sleep ensures the Service endpoint is removed
+          # before the pod stops accepting connections (avoids 502 errors during
+          # rolling updates with slow load balancers).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5 && httpd -k graceful-stop"]
+
+          # Startup probe — evaluated before liveness kicks in.
+          # The container has failureThreshold * periodSeconds seconds to start.
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+
+          # Liveness probe — kills and restarts the container if it fails.
+          # Must be a fast, local check — not an external dependency check.
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+
+          # Readiness probe — removes the pod from Service endpoints if it fails.
+          # Traffic is only sent to pods that pass this probe.
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+
+          # Resource requests and limits.
+          # Requests: used by the scheduler for bin-packing decisions.
+          # Limits: hard caps; exceeding memory limit triggers OOMKilled.
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          # Volume mounts for this container.
+          # Required because readOnlyRootFilesystem: true prevents writes to the
+          # container filesystem; writable paths must be backed by explicit volumes.
+          {{- with .Values.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+      # Pod-level volumes available to all containers.
+      {{- with .Values.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # Node selector — restrict to nodes with specific labels.
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # Affinity rules — pod anti-affinity spreads replicas across nodes for HA.
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # Tolerations — allow scheduling on tainted nodes.
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

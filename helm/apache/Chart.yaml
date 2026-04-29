@@ -1,0 +1,22 @@
+apiVersion: v2
+name: apache
+description: Apache HTTP Server Helm chart for Kubernetes — production-grade example
+type: application
+version: 0.2.0
+appVersion: "2.4"
+
+keywords:
+  - apache
+  - http
+  - web
+
+home: https://httpd.apache.org/
+sources:
+  - https://github.com/apache/httpd
+
+maintainers:
+  - name: kube-platform
+    email: platform@example.com
+
+annotations:
+  category: WebServer
