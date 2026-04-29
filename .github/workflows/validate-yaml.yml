@@ -49,6 +49,7 @@ jobs:
           find . -type f \( -name '*.yml' -o -name '*.yaml' \) \
             ! -path './vendor/*' \
             ! -path './.git/*' \
+            ! -path './.github/*' \
           | sort \
           | xargs yamllint \
               --strict \
