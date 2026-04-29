@@ -1,0 +1,55 @@
+---
+# Service — Stable network endpoint for a set of Pods
+# =====================================================
+# Pods are ephemeral: they can be replaced at any time, getting new IP addresses.
+# A Service provides a stable virtual IP (ClusterIP) and DNS name that routes
+# traffic to matching Pods using a selector.
+#
+# Service types:
+#   ClusterIP    — Internal only (default). Accessible within the cluster only.
+#                  Use with Ingress for external HTTP/HTTPS traffic.
+#   NodePort     — Exposes a port on every cluster node (30000–32767 range).
+#                  Useful for development or non-HTTP protocols without a cloud LB.
+#   LoadBalancer — Provisions a cloud load balancer (AWS ELB, GCP LB, etc.).
+#                  Expensive for many services; prefer Ingress + ClusterIP.
+#   ExternalName — Maps the service to an external DNS name.
+#
+# This Service uses NodePort for easy local access with minikube.
+#
+# Apply:   kubectl apply -f service.yml
+# Access:  minikube service nginx-service
+# OR:      kubectl port-forward svc/nginx-service 8080:80
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
+    app.kubernetes.io/version: "1.27"
+    app.kubernetes.io/component: webserver
+    app.kubernetes.io/part-of: nginx
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: "NodePort Service exposing the intro nginx Deployment."
+spec:
+  type: NodePort
+
+  ports:
+    # port: the port the Service itself listens on (within the cluster).
+    - port: 80
+      # targetPort: the port on the Pod the Service forwards traffic to.
+      # Must match the containerPort in the Pod/Deployment spec.
+      # Using the named port ("http") is preferred over hard-coding the number.
+      targetPort: http
+      protocol: TCP
+      name: http
+      # nodePort: optional. If omitted, Kubernetes assigns a random port (30000–32767).
+      # Fixed nodePort makes it predictable for scripts and bookmarks.
+      nodePort: 30080
+
+  # Selector — Service sends traffic to Pods with ALL of these labels.
+  # Must match the Pod template labels in the Deployment.
+  selector:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: nginx
