@@ -1,0 +1,174 @@
+---
+# ArgoCD AppProject — kube-platform
+# ===================================
+# An AppProject restricts what an Application can deploy, where it can deploy to,
+# and who can manage it. Think of it as a security boundary within ArgoCD.
+#
+# Apply this BEFORE creating Applications that reference this project:
+#   kubectl apply -f gitops/argocd/app-project.yml -n argocd
+#
+# Reference:
+#   https://argo-cd.readthedocs.io/en/stable/user-guide/projects/
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: kube-platform
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: kube-platform
+    app.kubernetes.io/instance: kube-platform
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: gitops
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    kubernetes.io/description: >-
+      ArgoCD AppProject for the kube-platform team. Restricts deployments to
+      approved source repositories, destination namespaces, and resource types.
+  # finalizers: delete this project by removing apps first, then the project.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+
+spec:
+  description: "kube-platform GitOps deployment project — production workloads"
+
+  # sourceRepos — allowlist of Git repositories this project can deploy from.
+  # Use specific URLs to prevent Applications in this project from deploying
+  # from untrusted repositories.
+  sourceRepos:
+    - https://github.com/your-org/your-kubernetes-repo.git
+    # Allow Bitnami Helm charts for infrastructure components.
+    - https://charts.bitnami.com/bitnami
+    # Allow ArgoCD Helm charts.
+    - https://argoproj.github.io/argo-helm
+
+  # destinations — allowlist of clusters and namespaces this project can deploy to.
+  # Each entry is an (cluster, namespace) pair. Use '*' to allow all namespaces
+  # within a specific cluster (but prefer explicit namespace lists in production).
+  destinations:
+    # Application workloads
+    - server: https://kubernetes.default.svc
+      namespace: webapps
+    - server: https://kubernetes.default.svc
+      namespace: apps
+    - server: https://kubernetes.default.svc
+      namespace: notes-app
+    # Platform tooling
+    - server: https://kubernetes.default.svc
+      namespace: monitoring
+    - server: https://kubernetes.default.svc
+      namespace: logging
+    - server: https://kubernetes.default.svc
+      namespace: ingress-nginx
+    # ArgoCD manages itself
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+
+  # clusterResourceWhitelist — cluster-scoped resources this project can manage.
+  # Be conservative: only allow what is strictly needed.
+  # An empty list means no cluster-scoped resources are allowed.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: networking.k8s.io
+      kind: IngressClass
+    - group: storage.k8s.io
+      kind: StorageClass
+    - group: policy
+      kind: PodSecurityPolicy   # deprecated in 1.25; included for backward compat
+
+  # namespaceResourceWhitelist — namespace-scoped resources this project can manage.
+  # List explicitly to avoid accidentally allowing sensitive resource types.
+  namespaceResourceWhitelist:
+    # Core workload resources
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: ReplicaSet
+    - group: apps
+      kind: StatefulSet
+    - group: apps
+      kind: DaemonSet
+    # Core v1 resources
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Secret
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Pod
+    # Networking
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    # Autoscaling
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: policy
+      kind: PodDisruptionBudget
+    # RBAC (namespace-scoped)
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+    # Batch
+    - group: batch
+      kind: Job
+    - group: batch
+      kind: CronJob
+
+  # namespaceResourceBlacklist — resources explicitly DENIED even if whitelisted.
+  # Use this to block sensitive resources within otherwise permitted groups.
+  namespaceResourceBlacklist:
+    # Prevent Applications in this project from managing ResourceQuotas
+    # (those are platform-team only resources).
+    - group: ""
+      kind: ResourceQuota
+    - group: ""
+      kind: LimitRange
+
+  # roles — project-level RBAC for ArgoCD users.
+  roles:
+    # Read-only access — for developers who need visibility without deploy rights.
+    - name: readonly
+      description: "Read-only access to kube-platform Applications"
+      policies:
+        - p, proj:kube-platform:readonly, applications, get, kube-platform/*, allow
+      groups:
+        - developers   # Maps to your SSO group name
+
+    # Deploy access — for senior engineers and the CI/CD service account.
+    - name: deployer
+      description: "Deploy access to kube-platform Applications"
+      policies:
+        - p, proj:kube-platform:deployer, applications, get, kube-platform/*, allow
+        - p, proj:kube-platform:deployer, applications, sync, kube-platform/*, allow
+        - p, proj:kube-platform:deployer, applications, override, kube-platform/*, allow
+      groups:
+        - senior-engineers
+        - ci-cd-service-accounts
+
+  # orphanedResources — warn when resources exist in a namespace that are NOT
+  # managed by any Application in this project. Useful for catching manual changes.
+  orphanedResources:
+    warn: true
+
+  # syncWindows — restrict when automated sync is allowed.
+  # Uncomment to prevent deployments during business-critical hours.
+  # syncWindows:
+  #   - kind: deny
+  #     schedule: "0 9 * * 1-5"     # Monday–Friday 09:00
+  #     duration: 8h                 # for 8 hours (business hours)
+  #     applications: ["*"]
+  #     namespaces: ["*"]
+  #     clusters: ["*"]
