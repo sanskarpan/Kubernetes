@@ -1,0 +1,117 @@
+---
+# ==============================================================================
+# KYVERNO POLICYEXCEPTION — disallow-latest-tag exemptions
+# ==============================================================================
+# A PolicyException grants named pods/resources an exemption from one or more
+# Kyverno policy rules WITHOUT modifying the policy itself.
+#
+# WHEN TO USE POLICYEXCEPTION (breaking glass):
+#   PolicyExceptions are for KNOWN, DOCUMENTED edge cases where enforcement
+#   would block legitimate workloads. They are NOT a way to bypass security —
+#   every exception should have a documented rationale and owner.
+#
+#   Common legitimate cases:
+#     1. kube-system pods: system components (coredns, kube-proxy) sometimes use
+#        :latest or digest-only images that don't match the tag pattern required
+#        by the policy. In dev/test clusters this is especially common.
+#     2. Emergency hotfixes: teams under incident pressure may need to push a
+#        :latest image quickly. The exempt-policy label provides a break-glass
+#        mechanism with a clear audit trail (who applied the label and when).
+#     3. Legacy systems: older applications that pre-date the policy and have
+#        not yet been migrated. The exception makes the migration incremental.
+#
+# HOW IT DIFFERS FROM PSA EXEMPTIONS:
+#   Pod Security Admission (PSA) exemptions are configured at the API server
+#   level (--exempt-namespaces) and apply to ALL PSA policies globally.
+#   Kyverno PolicyExceptions are:
+#     - Namespaced or cluster-scoped resources (versioned, auditable)
+#     - Targeted: apply to specific policies and specific subjects
+#     - Git-committable: stored in source control like any other resource
+#     - Reviewable: visible in kubectl and Kyverno reports
+#
+# AUDIT TRAIL IN KYVERNO REPORTS:
+#   Even when a PolicyException is in effect, Kyverno still records the
+#   exception in PolicyReport and ClusterPolicyReport resources:
+#     kubectl get policyreport -A
+#     kubectl get clusterpolicyreport
+#   Each exempted resource appears with result: skip and the exception name,
+#   so security teams can audit what was bypassed and by whom.
+#
+# Apply:
+#   kubectl apply -f policy-exception.yaml
+#
+# Verify:
+#   kubectl get policyexception -n kyverno disallow-latest-tag-exception
+#   kubectl describe policyexception -n kyverno disallow-latest-tag-exception
+# ==============================================================================
+apiVersion: kyverno.io/v2
+kind: PolicyException
+metadata:
+  name: disallow-latest-tag-exception
+  # PolicyExceptions are namespaced. Place them in the kyverno namespace so
+  # only cluster admins (who have access to the kyverno namespace) can create them.
+  # This prevents application teams from creating their own exceptions.
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/name: disallow-latest-tag-exception
+    app.kubernetes.io/instance: disallow-latest-tag-exception
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      PolicyException granting named subjects an exemption from the
+      disallow-latest-tag ClusterPolicy. Covers kube-system pods (system
+      components) and pods with the emergency bypass label.
+    # Document the business justification and owner for every exception.
+    exception.kyverno.io/justification: >
+      kube-system: system pods managed by Kubernetes itself may use :latest
+      or digest-only images outside our control.
+      exempt-policy label: break-glass for incident response with audit trail.
+    exception.kyverno.io/owner: "platform-team@example.com"
+    exception.kyverno.io/review-date: "2025-01-01"
+spec:
+  # exceptions: list the specific policy and rule names this exception applies to.
+  # Being explicit (per rule) is safer than excepting the entire policy.
+  exceptions:
+    - policyName: disallow-latest-tag
+      ruleNames:
+        - require-image-tag
+        - require-image-tag-init-containers
+
+  # match: describes which resources qualify for the exception.
+  # A resource must match at least one entry in this list.
+  match:
+    any:
+      # -----------------------------------------------------------------------
+      # Exception 1: kube-system namespace
+      # -----------------------------------------------------------------------
+      # System pods (coredns, kube-proxy, metrics-server) are managed by the
+      # cluster control plane and may use image references we cannot control.
+      # This exception is scoped to kube-system only — not all system namespaces.
+      # -----------------------------------------------------------------------
+      - resources:
+          kinds:
+            - Pod
+          namespaces:
+            - kube-system
+
+      # -----------------------------------------------------------------------
+      # Exception 2: pods with the emergency bypass label
+      # -----------------------------------------------------------------------
+      # Pods labelled exempt-policy: "true" are exempt regardless of namespace.
+      # This is a break-glass mechanism for incident response.
+      #
+      # To use: kubectl label pod <name> exempt-policy=true -n <namespace>
+      #
+      # The label application is recorded in the Kubernetes audit log.
+      # Kyverno also records the exemption in PolicyReport with reason: skip.
+      # Security teams should alert on this label being added outside kube-system.
+      # -----------------------------------------------------------------------
+      - resources:
+          kinds:
+            - Pod
+          selector:
+            matchLabels:
+              exempt-policy: "true"
