@@ -1,0 +1,41 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-app
+  namespace: web
+  labels:
+    app.kubernetes.io/name: example-app
+    app.kubernetes.io/component: ingress
+  annotations:
+    # Tell cert-manager which ClusterIssuer to use for this Ingress.
+    # Start with letsencrypt-staging to verify setup, then switch to letsencrypt-prod.
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+    # Optional: configure nginx-specific settings.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # Optional: force HTTPS redirect for all HTTP traffic.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: example-app
+                port:
+                  number: 80
+  # TLS section — cert-manager will automatically provision the certificate
+  # and store it in the secret named below.
+  # The certificate is renewed automatically ~30 days before expiry.
+  tls:
+    - hosts:
+        - app.example.com
+      # cert-manager creates and manages this Secret automatically.
+      # Do not create this Secret manually — cert-manager owns it.
+      secretName: app-example-com-tls
