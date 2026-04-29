@@ -1,0 +1,86 @@
+# ==============================================================================
+# Allow Intra-Namespace Communication
+# ==============================================================================
+# Allows all pods within the same namespace to communicate with each other
+# on any port. This is the minimum required for microservice architectures
+# where services within a namespace need to call each other.
+#
+# Apply this AFTER deny-all to restore communication within the namespace:
+#   kubectl apply -f deny-all-ingress.yml      # Step 1: deny everything
+#   kubectl apply -f allow-same-namespace.yml  # Step 2: allow within namespace
+#
+# IMPORTANT: "Same namespace" is matched using the
+#   kubernetes.io/metadata.name label, which Kubernetes automatically adds
+#   to every namespace and which is immutable (cannot be forged by users
+#   who only have access to create pods, not to label namespaces).
+#
+# Do NOT use a custom label (e.g., name: workloads) for namespace matching
+# in security-critical policies, because users with permission to create
+# pods in their own namespace may also be able to add labels to objects
+# they control. The kubernetes.io/metadata.name label is set by the API
+# server itself and cannot be modified by normal users.
+#
+# NAMESPACE: Change "workloads" to the target namespace before applying.
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: workloads           # Target namespace — update as needed.
+
+  labels:
+    app.kubernetes.io/name: allow-same-namespace
+    app.kubernetes.io/instance: allow-same-namespace
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Allows all pods in the workloads namespace to communicate with each other
+      on any port. Apply after the default-deny-all policy to restore
+      intra-namespace communication while continuing to block cross-namespace
+      and external traffic.
+
+spec:
+  # podSelector: {} matches ALL pods in the namespace.
+  # This policy grants intra-namespace access to every pod.
+  # If you only want specific pods to receive intra-namespace traffic,
+  # use a label selector here instead of an empty selector.
+  podSelector: {}
+
+  policyTypes:
+    - Ingress
+    # Note: we only control Ingress here. Egress back to same-namespace pods
+    # is handled by the corresponding policy on the sending pod (or is allowed
+    # if no egress policy applies to the sender). If you have a deny-all
+    # egress policy in this namespace, add a matching Egress block below.
+
+  ingress:
+    - from:
+        # namespaceSelector with kubernetes.io/metadata.name matches only pods
+        # in THIS specific namespace. This is the standard recommended approach.
+        # kubernetes.io/metadata.name is an automatic, immutable label added by
+        # the Kubernetes API server — it cannot be spoofed by tenants.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: workloads   # Must match this namespace's name.
+
+      # No ports restriction means ALL ports are allowed.
+      # To restrict to specific ports, add a ports block:
+      # ports:
+      #   - protocol: TCP
+      #     port: 8080
+      #   - protocol: TCP
+      #     port: 9090  # metrics
+
+  # If you also have a deny-all egress policy, add this block to allow
+  # same-namespace egress communication:
+  #
+  # egress:
+  #   - to:
+  #       - namespaceSelector:
+  #           matchLabels:
+  #             kubernetes.io/metadata.name: workloads
+  #     # No ports restriction = all ports allowed within namespace

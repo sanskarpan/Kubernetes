@@ -1,0 +1,85 @@
+# ==============================================================================
+# Default Deny-All NetworkPolicy
+# ==============================================================================
+# IMPORTANT: Apply this first in every namespace, then add specific allow rules.
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ This is the foundation of a zero-trust network posture. Without this   │
+# │ policy, ALL traffic is allowed by default. Any pod can reach any other  │
+# │ pod in any namespace on any port — including your databases.            │
+# │                                                                          │
+# │ Workflow:                                                                │
+# │   1. kubectl apply -f deny-all-ingress.yml                              │
+# │   2. Add allow policies for specific required communication paths.       │
+# │   3. Test that required paths work and disallowed paths are blocked.    │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# WHAT THIS POLICY DOES:
+#   - podSelector: {} matches ALL pods in the namespace (the empty selector is
+#     a wildcard — it selects every pod regardless of labels).
+#   - policyTypes: [Ingress, Egress] — this policy governs both directions.
+#   - No ingress rules → all inbound traffic is dropped.
+#   - No egress rules → all outbound traffic is dropped.
+#
+# IMMEDIATE EFFECTS AFTER APPLYING:
+#   - Pods can no longer receive any inbound connections (from other pods,
+#     the Ingress Controller, or external traffic).
+#   - Pods can no longer make any outbound connections — including DNS queries.
+#     This means any pod that tries to resolve a hostname will fail with
+#     "Temporary failure in name resolution" until you add a DNS egress rule.
+#
+# WHAT TO ADD NEXT (in separate NetworkPolicy files):
+#   - DNS egress (port 53 UDP/TCP to kube-dns): required for all workloads
+#   - Ingress from Ingress Controller namespace: for HTTP/HTTPS services
+#   - Egress to specific downstream services: database, cache, external APIs
+#   - Ingress from monitoring namespace: for Prometheus scraping
+#
+# NAMESPACE: Change "database" to the target namespace before applying.
+# This file targets the "database" namespace as an example of the highest-
+# security namespace. Apply equivalents to all namespaces.
+#
+# Apply:
+#   kubectl apply -f deny-all-ingress.yml
+#   kubectl describe networkpolicy default-deny-all -n database
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: database          # Apply to the highest-risk namespaces first
+                               # (databases, secret stores, payment processing).
+                               # Replicate to every namespace in your cluster.
+
+  labels:
+    app.kubernetes.io/name: default-deny-all
+    app.kubernetes.io/instance: default-deny-all
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+
+  annotations:
+    kubernetes.io/description: >-
+      Default deny-all NetworkPolicy for the database namespace. Drops all
+      ingress and egress traffic for every pod in the namespace. Apply this
+      first, then add specific allow policies. This implements the zero-trust
+      network principle: deny by default, allow by explicit exception.
+
+spec:
+  # podSelector: {} — An empty label selector matches ALL pods in the namespace.
+  # This is the standard way to write a "catch-all" NetworkPolicy.
+  # It is NOT the same as omitting podSelector (which is invalid).
+  podSelector: {}
+
+  # policyTypes must list BOTH Ingress and Egress to deny traffic in
+  # both directions. Listing only Ingress would still allow all egress
+  # (pods could still exfiltrate data or reach the metadata API).
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # No ingress rules → all inbound connections are DROPPED.
+  # (Omitting the ingress field entirely when Ingress is in policyTypes
+  # is equivalent to ingress: [] — the result is the same: deny all.)
+
+  # No egress rules → all outbound connections are DROPPED.
+  # (Same logic: omitting egress field when Egress is in policyTypes = deny all.)
