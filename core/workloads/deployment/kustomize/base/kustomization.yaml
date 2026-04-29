@@ -1,0 +1,31 @@
+# ==============================================================================
+# kustomize/base/kustomization.yaml
+# Declares the resources that make up the base layer.
+#
+# This file is read by overlays using `bases:` or `resources:` pointing to this
+# directory. Overlays then apply patches on top of these base resources.
+#
+# To render the base manifests standalone (for local dev testing):
+#   kustomize build core/workloads/deployment/kustomize/base
+#   OR
+#   kubectl kustomize core/workloads/deployment/kustomize/base
+#
+# To apply directly (without overlay patching):
+#   kubectl apply -k core/workloads/deployment/kustomize/base
+# ==============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Common labels applied to ALL resources managed by this kustomization.
+# These are merged with (not replaced) any labels already on the resources.
+commonLabels:
+  app.kubernetes.io/managed-by: kubectl
+
+# Common annotations applied to ALL resources in this kustomization.
+commonAnnotations:
+  kustomize.config.k8s.io/base: "core/workloads/deployment/kustomize/base"
+
+# The base resources. Overlays inherit all of these and can patch them.
+resources:
+- nginx-deployment.yaml
+- nginx-service.yaml
