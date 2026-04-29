@@ -1,0 +1,133 @@
+---
+# ==============================================================================
+# SERVICEMONITOR — custom application in the default namespace
+# ==============================================================================
+# A ServiceMonitor tells Prometheus Operator which Services to scrape for metrics.
+# The Prometheus Operator watches ServiceMonitor resources and automatically
+# updates Prometheus's scrape configuration — no manual prometheus.yml editing needed.
+#
+# HOW IT WORKS:
+#   1. Your application exposes metrics at /metrics on a named Service port.
+#   2. You create a ServiceMonitor that matches that Service via label selectors.
+#   3. Prometheus Operator reads the ServiceMonitor and adds a scrape job to Prometheus.
+#   4. Prometheus scrapes the /metrics endpoint every `interval` seconds.
+#
+# PREREQUISITES FOR THE APPLICATION:
+#   The target Service MUST:
+#     a) Have a port named "metrics" (or whatever you configure in endpoints[].port)
+#     b) Match the ServiceMonitor's selector.matchLabels
+#
+#   Example Service:
+#     apiVersion: v1
+#     kind: Service
+#     metadata:
+#       name: myapp
+#       namespace: default
+#       labels:
+#         app.kubernetes.io/component: api   # <-- matches ServiceMonitor selector
+#     spec:
+#       ports:
+#         - name: metrics                     # <-- matches endpoints[].port
+#           port: 9090
+#           targetPort: 9090
+#
+# PROMETHEUS OPERATOR LABEL MATCHING:
+#   The Prometheus CR has a `serviceMonitorSelector` that controls which
+#   ServiceMonitors Prometheus picks up. The default kube-prometheus-stack
+#   configuration matches ServiceMonitors with the label: release: monitoring
+#
+#   If your Prometheus CR uses a different selector, adjust the labels below.
+#   Check your Prometheus CR:
+#     kubectl get prometheus -n monitoring -o yaml | grep -A5 serviceMonitorSelector
+#
+# HOW TO VERIFY THE SERVICE IS BEING SCRAPED:
+#   1. Check that Prometheus discovered the target:
+#      kubectl port-forward -n monitoring svc/prometheus-operated 9090:9090
+#      Open http://localhost:9090/targets — look for the myapp job
+#
+#   2. Check the ServiceMonitor status:
+#      kubectl get servicemonitor myapp-custom -n monitoring
+#
+#   3. Check endpoints:
+#      kubectl get endpoints -n default myapp-service
+#
+#   4. Query a metric in Prometheus:
+#      http://localhost:9090/graph — search for myapp_ metrics
+#
+# Apply:
+#   kubectl apply -f servicemonitor-custom-app.yaml
+# ==============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: myapp-custom
+  # ServiceMonitors are typically created in the monitoring namespace so that
+  # the Prometheus Operator (running in monitoring) can pick them up.
+  # Some configurations watch all namespaces — check your Prometheus CR.
+  namespace: monitoring
+  labels:
+    release: monitoring
+    app.kubernetes.io/name: myapp-custom
+    app.kubernetes.io/instance: myapp-custom
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: kube-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    kubernetes.io/description: >
+      ServiceMonitor for the myapp application in the default namespace.
+      Scrapes the /metrics endpoint on the Service port named 'metrics' every 30s.
+spec:
+  # ---------------------------------------------------------------------------
+  # namespaceSelector: which namespaces to look for matching Services
+  # ---------------------------------------------------------------------------
+  # matchNames: [default] — only look for Services in the 'default' namespace.
+  # To scrape Services in all namespaces: set 'any: true' instead.
+  namespaceSelector:
+    matchNames:
+      - default
+
+  # ---------------------------------------------------------------------------
+  # selector: which Services within the namespaces above to scrape
+  # ---------------------------------------------------------------------------
+  # Only Services with app.kubernetes.io/component: api will be targeted.
+  # Add more labels here to be more specific (e.g., also match by name or version).
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: api
+
+  # ---------------------------------------------------------------------------
+  # endpoints: how to scrape each matching Service
+  # ---------------------------------------------------------------------------
+  endpoints:
+    - # port: the NAME of the Service port to scrape (not the port number).
+      # The Service must have a port named 'metrics'. Named ports decouple the
+      # ServiceMonitor from the actual port number, which can change without
+      # updating the ServiceMonitor.
+      port: metrics
+
+      # interval: how often to scrape. 30s is a good default.
+      # Use 15s for latency-sensitive SLOs; use 60s for stable, low-traffic services.
+      interval: 30s
+
+      # path: the HTTP path where metrics are exposed.
+      # Default is /metrics — the Prometheus convention for all client libraries.
+      path: /metrics
+
+      # scheme: http or https. Use https if the app serves metrics over TLS.
+      scheme: http
+
+      # scrapeTimeout: if the scrape takes longer than this, it is marked as failed.
+      # Must be less than interval.
+      scrapeTimeout: 10s
+
+      # Optional: add Prometheus relabeling to drop or rename labels.
+      # relabelings:
+      #   - action: labeldrop
+      #     regex: (pod_template_hash)
+
+      # Optional: filter metrics on the target side before they reach Prometheus.
+      # metricRelabelings:
+      #   - sourceLabels: [__name__]
+      #     regex: 'go_.*'
+      #     action: drop  # drop Go runtime metrics to reduce cardinality
