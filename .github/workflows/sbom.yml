@@ -41,7 +41,7 @@ jobs:
       # Requires GITHUB_TOKEN with id-token: write and attestations: write permissions.
       # The attestation is stored in the GHCR alongside the image.
       - name: Attest SBOM
-        uses: actions/attest-sbom@v1
+        uses: actions/attest-sbom@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ github.sha }}
